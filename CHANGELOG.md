@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Q2 2025 walk-forward validation script (test_q2_2025_validation_optimized.py, 536 lines)
+- Q2 2025 validation results (52 trades, CSV format)
+- Comprehensive analysis documents (4 files, 73 KB total):
+  - Position sizing analysis comparing 9 strategies
+  - Profit factor improvement analysis (37.3% winner reversal finding)
+  - Trailing stop results and configuration
+  - Spirit architecture review
+- Analysis scripts for threshold testing, profit factor improvements, position sizing
+- Project backlog with 18 prioritized tasks
+- Tomorrow's priorities planning document
 - XGBoost whipsaw detection model (v3) with 11-year training dataset (2013-2025)
 - ML experiment tracking framework with branch-based versioning
 - Training pipeline (train_whipsaw_xgboost.py) with performance tracking
@@ -25,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive security and credentials documentation
 
 ### Changed
+- ML model status: v3 fails Q2 2025 validation (PF 0.34, blocks 91.8% of trades)
+- Production deployment blocked pending distribution shift analysis
 - ML model feature set: removed lookahead bias features (MAE, MFE, bars_held) in v2
 - ML model dataset: expanded from 3.5k to 28k trades (8.9x increase) in v3
 - Feature importance shifted from ATR (v2, 56%) to SMA200 (v3, 27.8%) across market cycles
@@ -34,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lookahead bias in v1 ML model (v2 uses only pre-entry features)
 - NumPy type conversion bug in technical indicators computation (psycopg2 compatibility)
 - SQL01 VM stability after RAM overcommitment incident
+
+### Issues Discovered
+- ML model v3 does not generalize to Q2 2025 data (distribution shift)
+- Model too conservative: blocks 91.8% of Q2 2025 trades vs 73.6% on training data
+- Insufficient trade volume: 52 trades in 3 months vs expected ~200+ trades
+- Winner reversal problem: 37.3% of profitable trades reverse into losses (£33k opportunity cost)
 
 ### Performance
 - ML training time: 1.44s for 28k samples (excellent scalability)
