@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Q1 2025 validation script (test_q1_2025_validation.py, 535 lines) - untested due to infrastructure failure
 - Q2 2025 walk-forward validation script (test_q2_2025_validation_optimized.py, 536 lines)
 - Q2 2025 validation results (52 trades, CSV format)
 - Comprehensive analysis documents (4 files, 73 KB total):
@@ -48,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQL01 VM stability after RAM overcommitment incident
 
 ### Issues Discovered
+- **CRITICAL (2025-11-07):** SQL01 VM data disk hardware failure (2TB USB SSD)
+  - PostgreSQL I/O errors block all database access
+  - VM 107 cannot boot after disk migration (fstab configuration mismatch)
+  - USB storage reliability issues (multiple drives disconnected simultaneously)
+  - No backup strategy for 21GB database (8,656 CSV files, 176M+ rows at risk)
+  - 4TB drive (SSD2_4T) physically disconnected
 - ML model v3 does not generalize to Q2 2025 data (distribution shift)
 - Model too conservative: blocks 91.8% of Q2 2025 trades vs 73.6% on training data
 - Insufficient trade volume: 52 trades in 3 months vs expected ~200+ trades
@@ -99,4 +106,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-**Last Updated:** 2025-11-05
+## Infrastructure Incidents
+
+### 2025-11-07 - SQL01 Storage Failure
+**Severity:** Critical
+**Status:** Partially Resolved (VM offline, requires fstab repair)
+
+**Timeline:**
+- 09:00 - Attempted Q1 2025 validation, PostgreSQL I/O errors discovered
+- 10:00 - Root cause identified: 2TB USB SSD (SSD01_2T) hardware failure
+- 11:00 - Emergency data migration from 2TB to 500GB backup drive
+- 13:00 - USB power cycle restored 2TB drive (health uncertain)
+- 14:00 - VM 107 boot failure discovered (fstab mismatch with new disk)
+- 17:00 - Day ended with VM offline, Monday recovery planned
+
+**Impact:**
+- All ML validation work blocked (no database access)
+- Zero code progress on 2025-11-07
+- Q1 2025 validation script created but untested
+- Distribution shift investigation blocked
+
+**Resolution Plan (Monday 2025-11-10):**
+1. Boot VM 107 in rescue mode
+2. Update fstab with new disk UUIDs
+3. Verify database integrity (176M+ rows)
+4. Reconnect 4TB drive (SSD2_4T)
+5. Implement emergency backup strategy
+6. Assess 2TB drive health (SMART diagnostics)
+
+**Lessons Learned:**
+- USB storage unreliable for production databases
+- No backup strategy = unacceptable risk
+- Need hardware health monitoring (SMART, I/O errors)
+- Document disaster recovery procedures
+
+### 2025-11-03 - SQL01 VM Crash
+**Severity:** High
+**Status:** Resolved
+
+**Cause:** Proxmox RAM overcommitment during CSV import
+**Resolution:** Within 1 hour, zero data loss
+**Reference:** docs/SQL01_INCIDENT_RESOLUTION.md
+
+---
+
+**Last Updated:** 2025-11-07
