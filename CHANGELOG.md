@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Infrastructure expansion** (2025-11-11): Dell-6330 laptop added to Proxmox cluster
+  - Purpose: Temporary VM host to resolve Bot machine OOM issues
+  - Specs: 8GB RAM, 256GB SSD
+  - Will host VMs 101, 102, 103 (freeing ~8GB RAM on PVE host)
+  - Enables Bot machine RAM reallocation (9.7GB → 16-18GB target)
 - **NEW Q1-trained XGBoost model** (2025-11-10) with 3.5x better precision than old model
   - Model path: models/whipsaw_xgb_q1_2025/whipsaw_model_q1.json
   - Training: 128 samples from Q1 2025 (80/20 split)
@@ -66,6 +71,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQL01 VM stability after RAM overcommitment incident
 
 ### Issues Discovered
+- **CRITICAL (2025-11-11):** Bot machine OOM events blocking ML validation work
+  - 4 OOM killer events (Python scripts consuming 9.6GB on 9.7GB system)
+  - Root cause: ML validation scripts loading large OHLC datasets with technical indicators
+  - Scripts affected: test_q1_2025_validation.py, test_q2_2025_validation.py
+  - Impact: All ML script execution blocked, Q2 baseline validation incomplete
+  - Resolution: Infrastructure expansion (Dell-6330) to free RAM for Bot machine
+  - Target: 16-18GB RAM allocation (sufficient for ML workloads)
 - **CRITICAL (2025-11-07):** SQL01 VM data disk hardware failure (2TB USB SSD)
   - PostgreSQL I/O errors block all database access
   - VM 107 cannot boot after disk migration (fstab configuration mismatch)
@@ -167,4 +179,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-**Last Updated:** 2025-11-10
+**Last Updated:** 2025-11-11
