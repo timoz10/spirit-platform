@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **ML whipsaw guard integration** (2025-11-14): Production XGBoost guard operational in Spirit bot
+  - Fixed prediction API: Changed from predict_proba to DMatrix + predict (native XGBoost)
+  - Feature extraction: All 9 features working (close, SMA200, ATR, MACD, signal, histogram, RSI, ADX, volume)
+  - Guard performance: 11 high-risk trades blocked at threshold 0.7 with 100% precision
+  - Strategy integration: ML strategy selectable via SPIRIT_STRATEGY environment variable
+  - Aliases: macd_cross_ml, macd_ml, ml
+- **Test dataset** (2025-11-14): xbtusd_15m_4weeks.csv with 2,689 bars for validation
+- **Database migration** (2025-11-14): SQLite to PostgreSQL sync (550K rows, zero errors)
+  - Gap filled: 2025-08-26 to 2025-11-14 (80 days of current data)
+  - Total PostgreSQL rows: 210.5M (database current through Nov 14, 2025)
+- **Comprehensive ML documentation** (2025-11-14): 2,543 lines across 4 guides
+  - WHIPSAW_MODEL_TRAINING_METHODOLOGY.md (714 lines) - Training process
+  - SPIRIT_ML_INTEGRATION_GUIDE.md (842 lines) - Integration guide
+  - ML_STRATEGY_USAGE.md (215 lines) - Usage instructions
+  - TECHNICAL_DEBT.md (169 lines) - Technical debt tracking
+  - BLOG_WORKSTREAM_TRACKER.md (704 lines) - Blog site milestones
+- **Blog site workstream** (2025-11-14): Theme and color palette configured
+  - Platform: Ghost CMS
+  - Status: Planning phase (defining site deliverables)
+  - Purpose: Parallel income stream alongside trading bot
 - **Cloud infrastructure** (2025-11-13): Migrated to Hetzner Cloud
   - Bot server: CPX42 (8 vCPU, 16GB RAM, 160GB NVMe) at 188.245.209.204
   - PostgreSQL server: CX22 (2 vCPU, 8GB RAM, 80GB NVMe) at 188.245.98.89
@@ -63,6 +83,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive security and credentials documentation
 
 ### Changed
+- **ML prediction API** (2025-11-14): Switched to native XGBoost DMatrix approach
+  - Old: predict_proba() on scikit-learn wrapper (FAILED)
+  - New: DMatrix + predict() on native Booster (SUCCESS)
+  - Benefit: More reliable, better performance, avoids joblib issues
+- **Feature extraction robustness** (2025-11-14): Added column name fallback logic
+  - Checks both 'macd_hist' (Spirit) and 'macd_histogram' (training data)
+  - Enhanced missing value detection with named tracking
+  - Debug logging added for troubleshooting (10+ statements)
+- **Branch status** (2025-11-14): feature/whipsaw-ml-v2 merged to develop
+  - Merge commit: f90bd23
+  - Status: ML strategy now in integration branch
+  - Next: Paper trading validation
 - **Infrastructure architecture** (2025-11-13): Hybrid cloud/local deployment
   - Bot compute workloads: Cloud (Hetzner CPX42, 16GB RAM)
   - PostgreSQL database: Cloud (Hetzner CX22, 8GB RAM)
@@ -82,6 +114,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model selectivity: v3 allows 26.4% of trades vs v2's 15.5% (more balanced)
 
 ### Fixed
+- **XGBoost prediction API error** (2025-11-14): ML guard integration failing
+  - Root cause: Using predict_proba() on native Booster instead of DMatrix + predict()
+  - Solution: Rewrote prediction logic to use XGBoost DMatrix API
+  - Impact: ML guard now operational with 11 blocks at 0.7 threshold
+- **Feature extraction bugs** (2025-11-14): Two bugs fixed in feature engineering
+  - Bug 1: Column name mismatch (macd_hist vs macd_histogram)
+  - Bug 2: Silent failures on missing values (no error reporting)
+  - Solution: Added fallback logic and enhanced missing value tracking
+  - Impact: All 9 features extracting correctly with comprehensive logging
 - **RESOLVED (2025-11-13):** Bot machine OOM crisis after 3-day blockage
   - Solution: Migrated to Hetzner CPX42 with 16GB RAM (65% increase)
   - ML validation work now unblocked
