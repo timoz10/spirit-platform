@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Trade quality analysis framework** (2025-11-15): Comprehensive system for analyzing MACD cross performance
+  - scripts/trade_quality_analysis.py - Detects crosses, simulates trades, classifies quality
+  - scripts/filter_effectiveness_on_quality.py - Tests filter configurations on trade populations
+  - scripts/create_q1_2025_data.py - Extracts Q1 2025 validation dataset from cloud PostgreSQL
+  - Trade classification: Good (>0%), Neutral (0 to -1%), Bad (<-1%)
+  - Metrics: P&L, MFE, MAE, capture rate, exit efficiency
+- **Q1 2025 validation dataset** (2025-11-15): test_data/xbtusd_60m_q1_2025.csv
+  - Period: 2025-01-01 to 2025-03-31
+  - Timeframe: 60-minute bars
+  - Total bars: 2,184
+  - File size: 183KB
+  - Source: Cloud PostgreSQL (188.245.98.89)
+- **Comprehensive analysis reports** (2025-11-15): 6 reports documenting filter failures
+  - Q1_2025_TRADE_QUALITY_REPORT.md (11KB) - Main findings
+  - STRATEGY_ITERATION_REPORT_2025-11-15.md - Iteration analysis
+  - ML_THRESHOLD_SWEEP_REPORT_2025-11-15.md - ML threshold results
+  - ML_GUARD_VALIDATION_RESULTS_2025-11-15.md - Validation results
+  - FINAL_STRATEGY_SUMMARY_2025-11-15.md - Strategy summary
+  - ML_VS_BASELINE_PERFORMANCE_REPORT_2025-11-15.md - Performance comparison
+- **Analysis output datasets** (2025-11-15):
+  - outputs/trade_quality_analysis_detailed.csv (21KB) - All 81 Q1 2025 trades analyzed
+  - outputs/filter_effectiveness_detailed.csv (12KB) - Filter performance data
+
+### Added
 - **ML whipsaw guard integration** (2025-11-14): Production XGBoost guard operational in Spirit bot
   - Fixed prediction API: Changed from predict_proba to DMatrix + predict (native XGBoost)
   - Feature extraction: All 9 features working (close, SMA200, ATR, MACD, signal, histogram, RSI, ADX, volume)
@@ -83,6 +107,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive security and credentials documentation
 
 ### Changed
+- **Strategy direction** (2025-11-15): Fundamental shift from threshold-based to adaptive filtering
+  - REJECTED "winning" filter config (SMA200 + ADX>20 + RSI<70)
+  - Root cause: Blocks 88% of good trades (3/17 captured) with NEGATIVE avg P&L (-0.24%)
+  - ADX-only filter superior: 88.2% capture rate (15/17) with positive avg P&L (+0.16%)
+  - Paper trading deployment PAUSED pending filter redesign
+  - New direction: Probabilistic/fuzzy logic + regime-adaptive filtering
+- **Exit strategy priority** (2025-11-15): Exit improvement now higher priority than entry filtering
+  - Analysis revealed 110.97% profit left on table (captures only 6.9% of potential)
+  - Average potential: 7.86% per good trade
+  - Average captured: 0.54% per good trade
+  - Trailing stops moved to P0 priority
 - **ML prediction API** (2025-11-14): Switched to native XGBoost DMatrix approach
   - Old: predict_proba() on scikit-learn wrapper (FAILED)
   - New: DMatrix + predict() on native Booster (SUCCESS)
@@ -141,6 +176,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQL01 VM stability after RAM overcommitment incident
 
 ### Issues Discovered
+- **CRITICAL (2025-11-15):** SMA200 filter blocking good trades in trending markets
+  - "Winning" config captures only 3/17 good trades (17.6%) with -0.24% avg P&L
+  - SMA200 blocks 47% of good trades (8 out of 17)
+  - Strategy over-optimized for choppy markets (Aug-Nov 2024), fails in trending markets (Q1 2025)
+  - Threshold-based logic (ADX>20, RSI<70, price>SMA200) too rigid for market spectrum
+  - Impact: Cannot deploy to paper trading with current filter configuration
+  - Resolution: Shift to probabilistic/adaptive filtering approach
+- **CRITICAL (2025-11-15):** Exit strategy leaving 110.97% profit on table
+  - Good trades average +7.86% potential but only +0.54% captured (6.9% efficiency)
+  - Exit inefficiency larger issue than entry filtering
+  - Impact: Even perfect entry filter cannot overcome poor exits
+  - Resolution: Implement trailing stops (P0 priority)
 - **RESOLVED (2025-11-13):** Bot machine OOM events blocking ML validation work
   - Resolution: Cloud migration to Hetzner CPX42 (16GB RAM)
   - Status: Unblocked after 3-day blockage (2025-11-10, 11, 12)
