@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Comprehensive ML failure blog post** (2025-11-20): Why_Our_XGBoost_Whipsaw_Model_Failed.md
+  - Path: docs/blog_posts/Why_Our_XGBoost_Whipsaw_Model_Failed.md
+  - Length: 492 lines (~5,000 words)
+  - Purpose: Document complete ML whipsaw guard journey from success to failure
+  - Covers: 4 model versions, 3 validation periods, 9 weeks walk-forward analysis
+  - Key finding: 92% performance drop from training (F1: 0.97) to testing (F1: 0.07)
+  - Lessons learned: 10 actionable insights for ML practitioners
+  - Strategic outcome: ML whipsaw guard abandoned, pivot to trailing stops (30x better)
+
+### Added
 - **Trade quality analysis framework** (2025-11-15): Comprehensive system for analyzing MACD cross performance
   - scripts/trade_quality_analysis.py - Detects crosses, simulates trades, classifies quality
   - scripts/filter_effectiveness_on_quality.py - Tests filter configurations on trade populations
