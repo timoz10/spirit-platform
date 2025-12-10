@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Database infrastructure corrected** (2025-12-10): Migrated PostgreSQL from Dev server to DB server
+  - Database relocated: 188.245.98.89 → 188.245.209.204
+  - Database size: 50GB (210,487,769 rows in ohlc table)
+  - Migration duration: 2.5 hours (dump, transfer, restore)
+  - Disk space freed on Dev server: 51GB (from 64GB to 13GB used)
+  - Database now on appropriate server: 16GB RAM vs 8GB RAM
+  - Zero data loss, zero downtime
+  - 24 Python scripts updated with correct database host
+  - utils/db_connection.py and .env.postgres updated
+  - PostgreSQL removed from Dev server
+  - Documentation: DATABASE_MIGRATION_SUCCESS_2025-12-10.md (560 lines)
+  - Documentation: INFRASTRUCTURE_AUDIT_2025-12-10.md (463 lines)
+  - Documentation: CLOUD_MIGRATION_PLAN_2025-12-10.md (987 lines)
+  - Pending: 200GB cloud volume decision (move to DB server or remove)
+
 ### Added
+- **ML validation studies and lessons learned** (2025-12-08): Comprehensive validation confirming ML abandonment decision
+  - TEMPORAL_LEAKAGE_VALIDATION_FINDINGS.md (383 lines) - Temporal leakage hypothesis test (REJECTED)
+  - RANKING_SYSTEM_VALIDATION_REPORT.md (351 lines) - Data quality verification (31,371 trades validated)
+  - FINDING_OPTIMAL_TRAINING_WINDOW.md (454 lines) - Window size optimization methodology
+  - OPTIMAL_WINDOW_RESULTS.md (364 lines) - Window analysis results (all failed, Test F1 < 0.13)
+  - ML_MODEL_TRAINING_LESSONS_LEARNED.md (1,232 lines) - V3 model post-mortem with templates
+  - FINAL_VALIDATION_TEST_PLAN.md (188 lines) - Test design for temporal split validation
+  - scripts/final_validation_temporal_split.py - Temporal leakage test implementation
+  - scripts/validate_ranking_system.py - Database ranking system validation
+  - scripts/find_optimal_training_window.py - Window size optimization testing
+  - Key findings: Insufficient data primary problem (81 trades too few), temporal leakage not the issue, window size irrelevant, features inadequate
+  - Strategic confirmation: ML abandonment justified with quantitative evidence from 3 independent validation studies
+
+- **Blog editing infrastructure** (2025-12-08): AI-powered workflow for Ghost blog quality control
+  - BLOG_EDITING_GUIDE.md (369 lines) - Comprehensive guide for /blog-edit command usage
+  - .claude/commands/blog-edit.md - AI editor slash command implementation
+  - .claude/commands/README.md - Command documentation
+  - Features: Grammar correction, technical accuracy verification, voice consistency, enhancement suggestions
+  - TradeBOT voice documented: Honest, technical, practical, conversational, direct
+  - Blog post iterations: Refined ML failure post with dates, code examples, casual tone
+
 - **Comprehensive ML failure blog post** (2025-11-20): Why_Our_XGBoost_Whipsaw_Model_Failed.md
   - Path: docs/blog_posts/Why_Our_XGBoost_Whipsaw_Model_Failed.md
   - Length: 492 lines (~5,000 words)
