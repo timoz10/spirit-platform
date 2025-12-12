@@ -21,7 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Documentation: DATABASE_MIGRATION_SUCCESS_2025-12-10.md (560 lines)
   - Documentation: INFRASTRUCTURE_AUDIT_2025-12-10.md (463 lines)
   - Documentation: CLOUD_MIGRATION_PLAN_2025-12-10.md (987 lines)
-  - Pending: 200GB cloud volume decision (move to DB server or remove)
+- **Infrastructure simplification** (2025-12-12): Removed 200GB cloud volume
+  - Decision: Keep database on system drive (160GB), remove unused cloud volume
+  - Rationale: 50GB database on 160GB drive (37% used), adequate for 1-2+ years
+  - Cost savings: €5.28/month (€63.36/year)
+  - Result: Simpler infrastructure, no downtime, volume can be added back if needed
+  - Documentation: CLOUD_VOLUME_REMOVAL_2025-12-12.md
 
 ### Added
 - **ML validation studies and lessons learned** (2025-12-08): Comprehensive validation confirming ML abandonment decision
