@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Daily close-up documentation** (2025-12-12): End of day summary for infrastructure and security work
+  - docs/daily/2025-12-12.md (daily log with detailed activity summary)
+  - docs/daily/2025-12-12-RECAP.md (comprehensive recap of infrastructure cleanup)
+  - docs/branches.md updated (Last Activity: 2025-12-12 for feature/d-limit)
+  - docs/context.md updated (Infrastructure simplification and security hardening section)
+
 ### Changed
 - **Database infrastructure corrected** (2025-12-10): Migrated PostgreSQL from Dev server to DB server
   - Database relocated: 188.245.98.89 → 188.245.209.204
