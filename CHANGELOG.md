@@ -435,4 +435,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-**Last Updated:** 2025-11-13
+## Historical Bug Fixes (July-August 2025)
+
+These issues were resolved during the initial Spirit bot development phase.
+
+### 2025-07-15
+
+**Issue 1: Duplicate Trades in Rolling Window**
+- Bug: Multiple trades logged for same entry time due to processing entire temp table on each rolling window step
+- Fix: Only the latest row is now processed for trade signals
+
+**Issue 2: Data Fetch Delay**
+- Bug: Data not being fetched from data source, causing tables to be dropped
+- Fix: Added buffer wait logic to ensure data is fully loaded before processing
+
+**Issue 3: Datetime Format Consistency**
+- Bug: Inconsistent datetime formats between API and CSV data
+- Fix: Added ISO8601 date format normalization to `data_source.py`
+
+### 2025-07-16
+
+**Issue 4: SMA200 Calculation Failure**
+- Bug: SMA200 calculation failing due to incorrect handling of rolling window - only single rows passed
+- Fix: Fixed CSV import to ensure 720 rows imported at once into buffer
+
+### 2025-07-17
+
+**Issue 5: Time/Date Handling for API Calls**
+- Bug: Polling handled by spirit_main with no consistent time tracking
+- Fix: Moved API polling logic to `data_source.py` with consistent time tracking
+
+**Issue 6: Temp Table Management**
+- Bug: Temp table dropped and recreated on each new candle, causing issues with large indicators
+- Fix: Implemented efficient strategy that retains historical data, only updates new candle
+
+**Issue 7: Temp Table New Row Missing Engineering**
+- Bug: Feature engineering not applied correctly when new row added to temp table
+- Fix: Added mini engineering step after inserting new rows
+
+**Issue 8: Missing buffer.stop() Call**
+- Bug: Time sync process continued running after main program exit
+- Fix: Added `buffer.stop()` call in shutdown sequence
+
+### 2025-07-18
+
+**Issue 9-10: No Trades Logged**
+- Bug: spirit_main not processing trades correctly
+- Fix: Centralized trade logic to strategy module with TradeStateManager
+
+**Issue 11-12: Missing Trade Prices**
+- Bug: Strategy not returning entry/exit prices in trade details
+- Fix: In test mode, set prices from current row's close field if not present
+
+### 2025-07-21
+
+**Issue 13-14: TradeRecord Dataclass Migration**
+- Bug: Strategy using dict instead of TradeRecord dataclass
+- Fix: Updated strategy to use TradeRecord dataclass for all trade-related data
+
+### 2025-07-22
+
+**Issue 15: Trades Not in SQLite Temp Table**
+- Bug: Mismatch in request type data (macd_cross_event vs macd_cross)
+- Fix: Corrected to use macd_cross in both places
+
+**Issue 16: No Variable for Candle Time Frame**
+- Bug: API call hardcoded for 15min candle time frame
+- Fix: Added variable in spirit_main.py to pass time frame value
+
+### 2025-07-23
+
+**Issue 17: system_config.py & Logger Update**
+- Bug: Difficult to increase logging levels for debugging
+- Fix: Added system-wide variables file to manage configuration options
+
+**Issue 18: No Exit Trades Logged**
+- Bug: Exit trades not being logged
+- Fix: Corrected strategy logic - changed from macd_cross_event==-1 to macd_cross==-1.0
+
+**Issue 19: Missing Entry Index Numbers**
+- Resolution: Not a bug - entry_index not recorded when MACD is at 0
+
+### 2025-07-24
+
+**Issue 20: Missing Exit Data in CSV**
+- Bug: Incorrect/missing fields in TradeRecords dataclass
+- Fix: Exit trade data now recorded correctly in CSV output
+
+**Issue 21: spirit_main Loop with API**
+- Bug: API only sending 10 rows to buffer, preventing SMA200 calculation
+- Fix: Removed hardcoded API call, replaced with system variables for pair and request size
+
+### 2025-07-25
+
+**Issue 22: Candle Data Mismatch (API vs CSV)**
+- Bug: API data format doesn't match CSV test data format
+- Fix: Added `data_types.py` dataclass for standardized OHLC data format
+
+**Issue 23: spirit_main Looping on Startup**
+- Bug: No delay or wait for new candle data causing loop
+- Fix: Corrected get_window logic in LiveDataSource
+
+**Issue 24: spirit_temp_data Dropping Rows**
+- Bug: 199 rows removed on each loop but only 1 added
+- Fix: Only update features for new row, never replace or truncate table unless in full mode
+
+### 2025-08-01
+
+**Issue 25: macd_cross Calculation Timing**
+- Bug: macd_cross picks up event on next candle (15 min delay)
+- Fix: Corrected calculation logic to immediately reflect new regime on crossover row
+
+### 2025-08-02
+
+**Issue 26: macd_cross Serialization**
+- Bug: macd_cross being treated as numpy.int64, serialized to bytes object
+- Fix: Feature engineering logic updated to ensure macd_cross stored as integer
+
+### 2025-08-03
+
+**Issue 27: spirit_temp_table Primary Key Reuse**
+- Bug: ID reuse after row deletion due to `df.to_sql(..., if_exists="replace")`
+- Fix: Drop and recreate table with AUTOINCREMENT schema, use `if_exists="append"`
+
+---
+
+**Last Updated:** 2026-01-19
