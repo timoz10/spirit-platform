@@ -11,7 +11,7 @@ How to use on different servers:
 
 import os
 
-from utils.config_loader import get_config
+from spirit.utils.config_loader import get_config
 
 # --- Base directory resolution ---
 # Default to the repository root (directory containing this file)
@@ -19,6 +19,9 @@ DEFAULT_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.environ.get("KRAKEN_BOT_BASE_DIR", DEFAULT_BASE_DIR)
 
 # --- Paths (overridable via env) ---
+# DEPRECATED: DB_PATH is only kept for backward compatibility with strategies
+# that still import it. Spirit V2 uses SpiritContext (in-memory + PG) and
+# does not use SQLite. Will be removed once all strategies are migrated.
 DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "kraken_ohlc.db"))
 LOG_FILE = os.environ.get("LOG_FILE", os.path.join(BASE_DIR, "logs", "spirit_syslog.log"))
 

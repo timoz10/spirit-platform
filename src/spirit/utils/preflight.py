@@ -5,7 +5,7 @@ Runs before any trading logic to validate environment, connectivity,
 and data integrity. Prevents silent startup failures.
 
 Usage:
-    from utils.preflight import run_preflight
+    from spirit.utils.preflight import run_preflight
 
     result = run_preflight()
     if not result.passed:
@@ -17,7 +17,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from logger import get_logger
+from spirit.logger import get_logger
 logger = get_logger("preflight")
 
 
@@ -49,7 +49,7 @@ class PreflightResult:
 def _check_pg_connectivity() -> CheckResult:
     """Test PostgreSQL connection via existing db_connection module."""
     try:
-        from utils.db_connection import test_connection
+        from spirit.utils.db_connection import test_connection
         if test_connection():
             return CheckResult(
                 name='pg_connectivity',
@@ -85,7 +85,7 @@ def _check_pg_tables() -> CheckResult:
         'd_limit_zone_touches',
     ]
     try:
-        from utils.db_connection import execute_query
+        from spirit.utils.db_connection import execute_query
         rows = execute_query(
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = 'public' AND table_name = ANY(%s)",
@@ -120,7 +120,7 @@ def _check_pg_tables() -> CheckResult:
 def _check_kraken_keys() -> CheckResult:
     """Verify Kraken API keys are accessible."""
     try:
-        from utils.kraken_api_client import _get_env_or_file
+        from spirit.utils.kraken_api_client import _get_env_or_file
         key = _get_env_or_file('KRAKEN_API_KEY')
         secret = _get_env_or_file('KRAKEN_API_SECRET')
         if key and secret:
@@ -154,7 +154,7 @@ def _check_kraken_keys() -> CheckResult:
 def _check_ohlc_freshness() -> CheckResult:
     """Check how recent the OHLC data is in PostgreSQL."""
     try:
-        from utils.db_connection import execute_query
+        from spirit.utils.db_connection import execute_query
         row = execute_query(
             "SELECT MAX(datetime) AS latest FROM ohlc_2026 WHERE interval = 60",
             fetch='one',
@@ -198,7 +198,7 @@ def _check_ohlc_freshness() -> CheckResult:
 
 def _check_env_vars() -> CheckResult:
     """Verify required environment variables / config values are set."""
-    from utils.config_loader import get_config
+    from spirit.utils.config_loader import get_config
 
     # Secrets: must come from env vars (not YAML)
     secrets = ['POSTGRES_PASSWORD', 'KRAKEN_API_KEY']

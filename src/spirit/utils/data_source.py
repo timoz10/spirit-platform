@@ -3,9 +3,9 @@
 import pandas as pd
 import time
 import datetime
-from logger import logger
-from data_types import OHLCRecord, OHLCData
-from system_config import KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL, KRAKEN_PAIR, KRAKEN_OHLC_BUFFER_DELAY_SECONDS
+from spirit.logger import logger
+from spirit.data_types import OHLCRecord, OHLCData
+from spirit.config import KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL, KRAKEN_PAIR, KRAKEN_OHLC_BUFFER_DELAY_SECONDS
 import abc
 
 
@@ -297,7 +297,7 @@ class CsvMultiIntervalDataSource:
 # Example stub for live Kraken API (to be implemented as needed)
 
 
-from utils.kraken_ohlc_buffer import KrakenOHLCBuffer
+from spirit.utils.kraken_ohlc_buffer import KrakenOHLCBuffer
 
 class LiveDataSource(DataSource):
     """Single-interval live data source (compat wrapper).
@@ -368,5 +368,5 @@ class LiveDataSource(DataSource):
             raise
         logger.debug(f"[LiveDataSource.get_window] buffer.lock RELEASED thread={thread_id} at {time.time()} Returning {len(candles)} candles.")
         # All candles are OHLCRecord objects (from buffer)
-        from data_types import OHLCData
+        from spirit.data_types import OHLCData
         return OHLCData(records=candles)

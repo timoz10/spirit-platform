@@ -10,17 +10,31 @@ import yaml
 
 _config_cache = None
 
+# Candidate YAML paths (tried in order)
+_YAML_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), '..', 'config', 'spirit.yaml'),     # src/spirit/config/
+    os.path.join(os.path.dirname(__file__), '..', '..', '..', 'config', 'spirit.yaml'),  # project root config/
+]
+
 
 def _load_yaml():
     global _config_cache
     if _config_cache is None:
-        yaml_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'spirit.yaml')
-        try:
-            with open(yaml_path) as f:
-                _config_cache = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            _config_cache = {}
+        for candidate in _YAML_CANDIDATES:
+            yaml_path = os.path.normpath(candidate)
+            try:
+                with open(yaml_path) as f:
+                    _config_cache = yaml.safe_load(f) or {}
+                    return _config_cache
+            except FileNotFoundError:
+                continue
+        _config_cache = {}
     return _config_cache
+
+
+def load_yaml_config() -> dict:
+    """Return the full parsed YAML config dict (cached)."""
+    return _load_yaml()
 
 
 def get_config(key: str, default=None):
