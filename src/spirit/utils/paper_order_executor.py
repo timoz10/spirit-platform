@@ -5,18 +5,29 @@ Same interface as KrakenOrderExecutor (place_order / close_order), swappable
 at init time in spirit_main.py. Uses Kraken's validate=true to confirm order
 validity, then fetches real bid/ask from the public Ticker API for fill prices.
 
-Equity is tracked in-memory and resets on each Spirit restart. Individual
-trade results are persisted to PostgreSQL strategy_performance for analysis.
+Equity tracks true portfolio value: cash + unrealized position value.
+Individual trade results are persisted to PostgreSQL strategy_performance.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import Dict, Optional
 
-from logger import get_logger
+from spirit.logger import get_logger
 
 logger = get_logger("paper_executor")
+
+
+@dataclass
+class _OpenPosition:
+    """Tracks an open paper position for equity calculation."""
+    pair: str
+    volume: float          # Base asset quantity (e.g. BTC)
+    entry_price: float     # Fill price at entry
+    notional_usd: float    # USD value at entry (volume * entry_price)
+    order_id: str
 
 
 class PaperOrderExecutor:
@@ -28,11 +39,12 @@ class PaperOrderExecutor:
         pair: Optional[str] = None,
         volume_step: float = 0.0001,
     ):
-        from system_config import KRAKEN_PAIR
+        from spirit.config import KRAKEN_PAIR
 
         self.pair = pair or KRAKEN_PAIR
         self.volume_step = float(volume_step)
-        self.equity = float(starting_equity)
+        self.cash = float(starting_equity)
+        self._open_positions: Dict[str, _OpenPosition] = {}  # order_id → position
         self.max_trade_usd = float(max_trade_usd)
         self.fee_pct = float(fee_pct)
         self._seq = 0
@@ -41,6 +53,26 @@ class PaperOrderExecutor:
             f"[PAPER] Initialized: equity=${self.equity:.2f} "
             f"max_trade=${self.max_trade_usd:.0f} fee={self.fee_pct:.2f}%"
         )
+
+    @property
+    def equity(self) -> float:
+        """Portfolio value = cash + unrealized position value (at entry price).
+
+        Uses entry price as a conservative estimate. For a more accurate
+        mark-to-market, call mark_to_market() which fetches live prices.
+        """
+        position_value = sum(p.notional_usd for p in self._open_positions.values())
+        return self.cash + position_value
+
+    @equity.setter
+    def equity(self, value: float):
+        """Set equity directly (used by crash recovery).
+
+        Adjusts cash to match — assumes no open positions at restore time
+        (positions are restored separately via TradeStateManager).
+        """
+        position_value = sum(p.notional_usd for p in self._open_positions.values())
+        self.cash = float(value) - position_value
 
     def _round_volume(self, volume: float) -> float:
         step = self.volume_step
@@ -52,15 +84,15 @@ class PaperOrderExecutor:
         self._seq += 1
         return f"paper-{int(time.time())}-{self._seq}"
 
-    def _get_ticker(self) -> dict:
-        from utils.kraken_api_client import get_ticker
-        return get_ticker(self.pair)
+    def _get_ticker(self, pair: str = None) -> dict:
+        from spirit.utils.kraken_api_client import get_ticker
+        return get_ticker(pair or self.pair)
 
-    def _validate_order(self, side: str, volume: float) -> dict:
+    def _validate_order(self, side: str, volume: float, pair: str = None) -> dict:
         """Call Kraken AddOrder with validate=true to confirm order is valid."""
-        from utils.kraken_api_client import place_order
+        from spirit.utils.kraken_api_client import place_order
         return place_order(
-            self.pair, side, volume, ordertype='market', validate=True,
+            pair or self.pair, side, volume, ordertype='market', validate=True,
         )
 
     def place_order(self, trade_record) -> dict:
@@ -70,14 +102,17 @@ class PaperOrderExecutor:
         Caps buy_amount at max_trade_usd, deducts entry fee, updates equity.
         Sets trade_record fields: entry_price, buy_amount, order_id, mode, fee.
         """
+        # Extract pair from trade_record (multi-pair support)
+        pair = getattr(trade_record, 'symbol', None) or self.pair
+
         # Get real ask price first (needed for USD/BTC detection)
-        ticker = self._get_ticker()
+        ticker = self._get_ticker(pair)
         ask_price = ticker['ask']
 
         # Determine USD size (capped)
         buy_usd = getattr(trade_record, 'buy_amount', None)
         if buy_usd is None:
-            from system_config import TRADE_USD_AMOUNT
+            from spirit.config import TRADE_USD_AMOUNT
             buy_usd = TRADE_USD_AMOUNT
         buy_usd = float(buy_usd)
 
@@ -85,10 +120,10 @@ class PaperOrderExecutor:
         if buy_usd < 1.0 and ask_price > 100:
             buy_usd = buy_usd * ask_price
 
-        buy_usd = min(buy_usd, self.max_trade_usd, max(0.0, self.equity))
+        buy_usd = min(buy_usd, self.max_trade_usd, max(0.0, self.cash))
 
         if buy_usd <= 0:
-            logger.warning("[PAPER] Insufficient equity for trade")
+            logger.warning("[PAPER] Insufficient cash for trade")
             return {}
 
         # Compute volume in base asset
@@ -96,7 +131,7 @@ class PaperOrderExecutor:
 
         # Validate with Kraken
         try:
-            self._validate_order('buy', volume)
+            self._validate_order('buy', volume, pair)
         except Exception as e:
             logger.error(f"[PAPER] Order validation failed: {e}")
             return {}
@@ -104,11 +139,18 @@ class PaperOrderExecutor:
         # Compute fee (half of round-trip at entry)
         entry_fee_usd = buy_usd * (self.fee_pct / 100.0) / 2.0
 
-        # Update equity
-        self.equity -= (buy_usd + entry_fee_usd)
+        # Update cash and track position
+        self.cash -= (buy_usd + entry_fee_usd)
+        order_id = self._next_order_id()
+        self._open_positions[order_id] = _OpenPosition(
+            pair=pair,
+            volume=volume,
+            entry_price=ask_price,
+            notional_usd=buy_usd,
+            order_id=order_id,
+        )
 
         # Update trade_record — preserve signal price before overwriting with fill
-        order_id = self._next_order_id()
         trade_record.signal_entry_price = trade_record.entry_price  # strategy's intended price
         trade_record.entry_price = ask_price                         # actual fill price
         trade_record.slippage = ask_price - (trade_record.signal_entry_price or ask_price)
@@ -121,12 +163,14 @@ class PaperOrderExecutor:
         logger.info(
             f"[PAPER BUY] signal={sig:.2f} fill={ask_price:.2f} "
             f"slip={trade_record.slippage:+.2f} vol={volume:.6f} "
-            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} equity=${self.equity:.2f}"
+            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} "
+            f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
             if sig is not None else
             f"[PAPER BUY] fill={ask_price:.2f} vol={volume:.6f} "
-            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} equity=${self.equity:.2f}"
+            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} "
+            f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
         )
-        return {'txid': [order_id], 'descr': {'order': f'paper buy {volume} {self.pair} @ market'}}
+        return {'txid': [order_id], 'descr': {'order': f'paper buy {volume} {pair} @ market'}}
 
     def close_order(self, open_trade, trade_record) -> dict:
         """
@@ -135,6 +179,9 @@ class PaperOrderExecutor:
         Deducts exit fee, updates equity, writes to PG strategy_performance.
         Sets trade_record fields: exit_price, order_id, fee (total round-trip).
         """
+        # Extract pair from open_trade (multi-pair support)
+        pair = getattr(open_trade, 'symbol', None) or self.pair
+
         buy_amount = getattr(open_trade, 'buy_amount', None) or getattr(trade_record, 'buy_amount', None)
         if buy_amount is None:
             logger.error("[PAPER] Cannot close trade: missing buy_amount")
@@ -143,12 +190,12 @@ class PaperOrderExecutor:
         volume = self._round_volume(float(buy_amount))
 
         # Get real bid price
-        ticker = self._get_ticker()
+        ticker = self._get_ticker(pair)
         bid_price = ticker['bid']
 
         # Validate with Kraken
         try:
-            self._validate_order('sell', volume)
+            self._validate_order('sell', volume, pair)
         except Exception as e:
             logger.error(f"[PAPER] Sell validation failed: {e}")
             return {}
@@ -162,8 +209,11 @@ class PaperOrderExecutor:
         total_fee = entry_fee_usd + exit_fee_usd
         pnl = notional_at_exit - notional_at_entry - total_fee
 
-        # Update equity (add back proceeds minus exit fee)
-        self.equity += (notional_at_exit - exit_fee_usd)
+        # Remove position from tracking and credit cash with proceeds
+        open_order_id = getattr(open_trade, 'order_id', None)
+        if open_order_id and open_order_id in self._open_positions:
+            del self._open_positions[open_order_id]
+        self.cash += (notional_at_exit - exit_fee_usd)
 
         # Update trade_record — preserve signal price before overwriting with fill
         order_id = self._next_order_id()
@@ -176,21 +226,23 @@ class PaperOrderExecutor:
         sig = trade_record.signal_exit_price
         logger.info(
             f"[PAPER SELL] signal={sig:.2f} fill={bid_price:.2f} "
-            f"pnl=${pnl:.2f} (net) fee=${total_fee:.4f} equity=${self.equity:.2f}"
+            f"pnl=${pnl:.2f} (net) fee=${total_fee:.4f} "
+            f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
             if sig is not None else
             f"[PAPER SELL] fill={bid_price:.2f} "
-            f"pnl=${pnl:.2f} (net) fee=${total_fee:.4f} equity=${self.equity:.2f}"
+            f"pnl=${pnl:.2f} (net) fee=${total_fee:.4f} "
+            f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
         )
 
         # Persist to PostgreSQL strategy_performance
         self._record_to_pg(open_trade, trade_record, pnl)
 
-        return {'txid': [order_id], 'descr': {'order': f'paper sell {volume} {self.pair} @ market'}}
+        return {'txid': [order_id], 'descr': {'order': f'paper sell {volume} {pair} @ market'}}
 
     def _record_to_pg(self, open_trade, trade_record, pnl: float):
         """Write completed paper trade to strategy_performance table."""
         try:
-            from indicators.decision_engine.engine.strategy_performance_writer import record_trade
+            from spirit.indicators.decision_engine.engine.strategy_performance_writer import record_trade
             from datetime import datetime, timezone
 
             entry_price = getattr(open_trade, 'entry_price', None) or 0.0
