@@ -1,0 +1,42 @@
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class TradeRecord:
+    trade_id: Optional[int] = None
+    entry_index: Optional[int] = None
+    exit_index: Optional[int] = None
+    entry_datetime: Optional[str] = None
+    exit_datetime: Optional[str] = None
+    entry_price: Optional[float] = None
+    exit_price: Optional[float] = None
+    signal_entry_price: Optional[float] = None
+    signal_exit_price: Optional[float] = None
+    buy_amount: Optional[float] = None
+    pnl: Optional[float] = None
+    macd_bullish_cross_entry: Optional[bool] = None
+    atr_entry: Optional[float] = None
+    sma200_entry: Optional[float] = None
+    rsi_entry: Optional[float] = None
+    impulse_macd_entry: Optional[float] = None
+    adx_entry: Optional[float] = None
+    plus_di_entry: Optional[float] = None
+    minus_di_entry: Optional[float] = None
+    trend_direction_entry: Optional[str] = None
+    macd_bullish_cross_exit: Optional[bool] = None
+    atr_exit: Optional[float] = None
+    sma200_exit: Optional[float] = None
+    rsi_exit: Optional[float] = None
+    impulse_macd_exit: Optional[float] = None
+    adx_exit: Optional[float] = None
+    plus_di_exit: Optional[float] = None
+    minus_di_exit: Optional[float] = None
+    trend_direction_exit: Optional[str] = None
+    exit_reason: Optional[str] = None
+    symbol: Optional[str] = None
+    interval: Optional[str] = None
+    order_id: Optional[str] = None
+    strategy_name: Optional[str] = None
+    mode: Optional[str] = None
+    fee: Optional[float] = None
+    slippage: Optional[float] = None
