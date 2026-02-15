@@ -10,7 +10,7 @@ Components replaced:
   PaperOrderExecutor.equity  → PG spirit_state + in-memory
   TradeStateManager.open_trade → PG spirit_state + in-memory
 
-Feature flag: SPIRIT_V2_CONTEXT=1 to activate (off by default).
+Always active — Spirit V2 is the only runtime path.
 
 Author: Claude Code + Tim
 Date: 2026-02-13
@@ -28,8 +28,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from logger import get_logger
-from utils.feature_engineering import add_features
+from spirit.logger import get_logger
+from spirit.utils.feature_engineering import add_features
 
 logger = get_logger("spirit_context")
 
@@ -39,7 +39,7 @@ MAX_OHLC_ROWS = 720
 
 class SpiritContext:
     """
-    Single source of truth for all Spirit runtime state.
+    Single source of truth for per-pair Spirit runtime state.
 
     Manages:
       - OHLC data + engineered features (in-memory DataFrame)
@@ -47,18 +47,24 @@ class SpiritContext:
       - Paper trading equity (in-memory + PG persistence)
       - Signal/decision history (in-memory, for web dashboard)
       - Health telemetry counters
+
+    Each pair gets its own SpiritContext instance. PG state keys are
+    pair-prefixed (e.g. 'open_trade:XBTUSD') for crash recovery.
     """
 
     def __init__(
         self,
+        pair: str = 'XBTUSD',
         max_rows: int = MAX_OHLC_ROWS,
         persist_to_pg: bool = True,
     ):
         """
         Args:
+            pair: Trading pair this context manages (e.g. 'XBTUSD')
             max_rows: Maximum OHLC rows per interval to retain
             persist_to_pg: Whether to persist state to PostgreSQL spirit_state table
         """
+        self.pair = pair
         self.max_rows = max_rows
         self.persist_to_pg = persist_to_pg
 
@@ -281,24 +287,34 @@ class SpiritContext:
     # TRADE STATE (replaces spirit_temp_trade)
     # =========================================================================
 
-    def set_open_trade(self, trade_record):
+    def _pg_key(self, key: str, strategy_name: str = '') -> str:
+        """Return prefixed PG state key.
+
+        Multi-strategy format: 'open_trade:zone_bounce:XBTUSD'
+        Single-strategy format: 'open_trade:XBTUSD' (backward compat)
+        """
+        if strategy_name:
+            return f"{key}:{strategy_name}:{self.pair}"
+        return f"{key}:{self.pair}"
+
+    def set_open_trade(self, trade_record, strategy_name: str = ''):
         """Record a new open trade. Persists to PG."""
         self.open_trade = trade_record
         self.health['trades_opened'] += 1
         if self.persist_to_pg:
-            self._save_to_pg('open_trade', self._serialize_trade(trade_record))
+            self._save_to_pg(self._pg_key('open_trade', strategy_name), self._serialize_trade(trade_record))
 
-    def clear_open_trade(self):
+    def clear_open_trade(self, strategy_name: str = ''):
         """Clear the open trade after close. Persists to PG."""
         self.open_trade = None
         if self.persist_to_pg:
-            self._save_to_pg('open_trade', None)
+            self._save_to_pg(self._pg_key('open_trade', strategy_name), None)
 
     def set_equity(self, equity: float):
         """Update paper trading equity. Persists to PG."""
         self.equity = equity
         if self.persist_to_pg:
-            self._save_to_pg('paper_equity', equity)
+            self._save_to_pg(self._pg_key('paper_equity'), equity)
 
     # =========================================================================
     # PG PERSISTENCE (spirit_state table)
@@ -307,7 +323,7 @@ class SpiritContext:
     def _ensure_pg_table(self):
         """Verify spirit_state table exists, creating it only if needed."""
         try:
-            from utils.db_connection import execute_query
+            from spirit.utils.db_connection import execute_query
             # Check existence first (works with read-only perms)
             row = execute_query(
                 "SELECT 1 FROM information_schema.tables "
@@ -333,7 +349,7 @@ class SpiritContext:
     def _save_to_pg(self, key: str, value):
         """Save a key-value pair to spirit_state (upsert)."""
         try:
-            from utils.db_connection import execute_query
+            from spirit.utils.db_connection import execute_query
             json_val = json.dumps(value, default=str)
             execute_query("""
                 INSERT INTO spirit_state (key, value, updated_at)
@@ -347,7 +363,7 @@ class SpiritContext:
     def _load_from_pg(self, key: str) -> Optional[Any]:
         """Load a value from spirit_state by key."""
         try:
-            from utils.db_connection import execute_query
+            from spirit.utils.db_connection import execute_query
             row = execute_query(
                 "SELECT value FROM spirit_state WHERE key = %s",
                 (key,),
@@ -364,12 +380,13 @@ class SpiritContext:
         """Persist all critical state to PG. Called periodically or on state changes."""
         if not self.persist_to_pg:
             return
-        self._save_to_pg('paper_equity', self.equity)
+        self._save_to_pg(self._pg_key('paper_equity'), self.equity)
         if self.open_trade is not None:
-            self._save_to_pg('open_trade', self._serialize_trade(self.open_trade))
+            self._save_to_pg(self._pg_key('open_trade'), self._serialize_trade(self.open_trade))
         else:
-            self._save_to_pg('open_trade', None)
-        self._save_to_pg('startup_config', {
+            self._save_to_pg(self._pg_key('open_trade'), None)
+        self._save_to_pg(self._pg_key('startup_config'), {
+            'pair': self.pair,
             'last_save': datetime.now(timezone.utc).isoformat(),
             'candles_processed': self.health['candles_processed'],
         })
@@ -378,6 +395,9 @@ class SpiritContext:
         """
         Restore state from PG on startup (crash recovery).
 
+        Tries pair-prefixed keys first (multi-pair format), then falls back
+        to legacy un-prefixed keys for backward compatibility.
+
         Returns True if state was restored, False if fresh start.
         """
         if not self.persist_to_pg:
@@ -385,34 +405,40 @@ class SpiritContext:
 
         restored = False
 
-        # Restore equity
-        equity_val = self._load_from_pg('paper_equity')
+        # Restore equity (try pair-prefixed first, then legacy)
+        equity_val = self._load_from_pg(self._pg_key('paper_equity'))
+        if equity_val is None:
+            equity_val = self._load_from_pg('paper_equity')
         if equity_val is not None:
             try:
                 self.equity = float(equity_val)
-                logger.info(f"[CONTEXT] Restored equity: ${self.equity:.2f}")
+                logger.info(f"[CONTEXT:{self.pair}] Restored equity: ${self.equity:.2f}")
                 restored = True
             except (TypeError, ValueError):
                 pass
 
-        # Restore open trade
-        trade_val = self._load_from_pg('open_trade')
+        # Restore open trade (try pair-prefixed first, then legacy)
+        trade_val = self._load_from_pg(self._pg_key('open_trade'))
+        if trade_val is None:
+            trade_val = self._load_from_pg('open_trade')
         if trade_val is not None and trade_val != 'null':
             try:
                 self.open_trade = self._deserialize_trade(trade_val)
                 if self.open_trade is not None:
                     entry_price = getattr(self.open_trade, 'entry_price', '?')
-                    logger.info(f"[CONTEXT] Restored open trade: entry_price={entry_price}")
+                    logger.info(f"[CONTEXT:{self.pair}] Restored open trade: entry_price={entry_price}")
                     restored = True
             except Exception as e:
-                logger.warning(f"[CONTEXT] Failed to restore open trade: {e}")
+                logger.warning(f"[CONTEXT:{self.pair}] Failed to restore open trade: {e}")
 
         if restored:
-            config_val = self._load_from_pg('startup_config')
+            config_val = self._load_from_pg(self._pg_key('startup_config'))
+            if config_val is None:
+                config_val = self._load_from_pg('startup_config')
             if config_val and isinstance(config_val, dict):
-                logger.info(f"[CONTEXT] Last save: {config_val.get('last_save', 'unknown')}")
+                logger.info(f"[CONTEXT:{self.pair}] Last save: {config_val.get('last_save', 'unknown')}")
         else:
-            logger.info("[CONTEXT] No state to restore (fresh start)")
+            logger.info(f"[CONTEXT:{self.pair}] No state to restore (fresh start)")
 
         return restored
 
@@ -447,7 +473,7 @@ class SpiritContext:
         if not isinstance(data, dict):
             return None
         try:
-            from trade_types import TradeRecord
+            from spirit.trade_types import TradeRecord
             fields = set(TradeRecord.__dataclass_fields__.keys())
             kwargs = {k: v for k, v in data.items() if k in fields}
             return TradeRecord(**kwargs)

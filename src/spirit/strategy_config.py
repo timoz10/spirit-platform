@@ -14,9 +14,9 @@ import json
 import os
 from typing import Any, Dict, Optional
 
-from utils.config_loader import get_config
+from spirit.utils.config_loader import get_config
 
-from logger import get_logger
+from spirit.logger import get_logger
 logger = get_logger("strategy_config")
 
 # ---------------------------------------------------------------------------
@@ -25,32 +25,32 @@ logger = get_logger("strategy_config")
 _STRATEGY_REGISTRY = {
     "zone_bounce": {
         "aliases": {"zone", "decision_engine_v2"},
-        "module": "strategies.zone_bounce_strategy",
+        "module": "spirit.strategies.zone_bounce",
         "class": "ZoneBounceStrategy",
     },
     "regime_engine": {
         "aliases": {"regime", "decision_engine"},
-        "module": "strategies.regime_engine_strategy",
+        "module": "spirit.strategies.regime_engine",
         "class": "RegimeEngineStrategy",
     },
     "test": {
         "aliases": {"test_algo"},
-        "module": "strategies.test_algo",
+        "module": "spirit.strategies.test_algo",
         "class": "TestStrategy",
     },
     "macd_cross": {
         "aliases": {"macd_full", "macd_full_algo", "macd_1.0", "macd_1_0"},
-        "module": "strategies.macd_cross",
+        "module": "spirit.strategies.macd_cross",
         "class": "MACD_full_algo",
     },
     "spine": {
         "aliases": {"multi", "orchestrator"},
-        "module": "strategies.spine_strategy",
+        "module": "spirit.strategies.spine",
         "class": "SpineStrategy",
     },
     "rsi_reversion": {
         "aliases": {"rsi", "rsi_mean_reversion"},
-        "module": "strategies.rsi_reversion_strategy",
+        "module": "spirit.strategies.rsi_reversion",
         "class": "RsiReversionStrategy",
     },
 }
@@ -63,6 +63,21 @@ for canonical, entry in _STRATEGY_REGISTRY.items():
         _ALIAS_MAP[alias] = canonical
 
 
+def get_spine_config() -> Dict[str, Any]:
+    """Read the 'spine:' section from spirit.yaml.
+
+    Returns dict with keys: max_concurrent_per_pair, strategies, risk_budget.
+    Returns empty dict if section is missing.
+    """
+    from spirit.utils.config_loader import load_yaml_config
+    try:
+        yaml_config = load_yaml_config()
+        return yaml_config.get('spine', {})
+    except Exception as e:
+        logger.warning(f"Failed to load spine config from YAML: {e}")
+        return {}
+
+
 def _parse_params(env_key: str = "SPIRIT_STRATEGY_PARAMS") -> Dict[str, Any]:
     raw = (get_config(env_key, "") or "").strip()
     if not raw:
@@ -73,9 +88,14 @@ def _parse_params(env_key: str = "SPIRIT_STRATEGY_PARAMS") -> Dict[str, Any]:
         return {}
 
 
-def get_strategy() -> Optional[Any]:
+def get_strategy(extra_params: Optional[Dict[str, Any]] = None) -> Optional[Any]:
     """
     Return the configured strategy instance, or None if it cannot be loaded.
+
+    Args:
+        extra_params: Additional constructor kwargs merged into SPIRIT_STRATEGY_PARAMS.
+                      Useful for per-pair instantiation (e.g. filter_pair='ETHUSD').
+                      Keys that the constructor doesn't accept are silently dropped.
 
     Returns None (not a fallback) when:
       - The requested name doesn't match any registered strategy
@@ -103,6 +123,8 @@ def get_strategy() -> Optional[Any]:
 
     entry = _STRATEGY_REGISTRY[canonical]
     params = _parse_params()
+    if extra_params:
+        params.update(extra_params)
 
     # Attempt import
     try:
@@ -122,9 +144,24 @@ def get_strategy() -> Optional[Any]:
         )
         return None
 
-    # Instantiate
+    # Instantiate — drop extra_params keys the constructor doesn't accept
     try:
         instance = cls(**params)
+    except TypeError:
+        import inspect
+        sig = inspect.signature(cls.__init__)
+        valid_keys = set(sig.parameters.keys()) - {'self'}
+        has_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in sig.parameters.values()
+        )
+        if not has_var_kw:
+            params = {k: v for k, v in params.items() if k in valid_keys}
+        try:
+            instance = cls(**params)
+        except Exception as e:
+            logger.error(f"Strategy '{canonical}' failed to instantiate: {e}")
+            return None
     except Exception as e:
         logger.error(f"Strategy '{canonical}' failed to instantiate: {e}")
         return None

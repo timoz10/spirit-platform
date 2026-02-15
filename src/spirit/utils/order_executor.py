@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from logger import get_logger
+from spirit.logger import get_logger
 
 logger = get_logger("order_executor")
 
@@ -27,7 +27,7 @@ class KrakenOrderExecutor:
         fill_poll_interval: float = 2.0,
         fill_poll_timeout: float = 30.0,
     ):
-        from system_config import KRAKEN_PAIR
+        from spirit.config import KRAKEN_PAIR
 
         self.pair = pair or KRAKEN_PAIR
         self.volume_step = float(volume_step)
@@ -50,7 +50,7 @@ class KrakenOrderExecutor:
 
     def _get_ticker(self) -> dict:
         """Fetch bid/ask/last from Kraken public Ticker API."""
-        from utils.kraken_api_client import get_ticker
+        from spirit.utils.kraken_api_client import get_ticker
         return get_ticker(self.pair)
 
     def _wait_for_fill(self, txid: str) -> dict:
@@ -58,7 +58,7 @@ class KrakenOrderExecutor:
         Poll QueryOrders until status='closed' or timeout.
         Returns the order data dict from Kraken.
         """
-        from utils.kraken_order_info import get_order_info
+        from spirit.utils.kraken_order_info import get_order_info
 
         deadline = time.time() + self.fill_poll_timeout
         last_status = None
@@ -111,7 +111,7 @@ class KrakenOrderExecutor:
     ):
         """Write fill details to PG live_orders table."""
         try:
-            from utils.db_connection import execute_query
+            from spirit.utils.db_connection import execute_query
 
             fill_price = float(fill_data.get('price', 0)) or None
             fill_volume = float(fill_data.get('vol_exec', 0)) or None
@@ -184,7 +184,7 @@ class KrakenOrderExecutor:
     def _record_to_strategy_performance(self, open_trade, trade_record, pnl: float):
         """Write completed live trade to strategy_performance table."""
         try:
-            from indicators.decision_engine.engine.strategy_performance_writer import record_trade
+            from spirit.indicators.decision_engine.engine.strategy_performance_writer import record_trade
 
             entry_price = getattr(open_trade, 'entry_price', None) or 0.0
             exit_price = getattr(trade_record, 'exit_price', None) or 0.0
@@ -223,7 +223,7 @@ class KrakenOrderExecutor:
         waits for fill, updates trade_record with actual fill details,
         records to live_orders, and updates equity.
         """
-        from system_config import TRADE_USD_AMOUNT
+        from spirit.config import TRADE_USD_AMOUNT
         from utils import kraken_api_client as kc
 
         submitted_at = datetime.now(timezone.utc)

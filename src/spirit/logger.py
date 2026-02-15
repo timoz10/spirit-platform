@@ -13,7 +13,7 @@ import json
 import logging
 import sys
 import os
-from system_config import LOGGING_LEVEL, LOG_FILE
+from spirit.config import LOGGING_LEVEL, LOG_FILE
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_FILE = LOG_FILE

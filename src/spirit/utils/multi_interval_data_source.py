@@ -9,14 +9,14 @@ an int (minutes) and window_df is an OHLCData instance.
 from typing import Dict, List, Optional
 import threading
 
-from logger import logger
-from data_types import OHLCData
-from system_config import (
+from spirit.logger import logger
+from spirit.data_types import OHLCData
+from spirit.config import (
     KRAKEN_OHLC_COUNT,
     KRAKEN_PAIR,
     KRAKEN_OHLC_BUFFER_DELAY_SECONDS,
 )
-from utils.kraken_ohlc_buffer import KrakenOHLCBuffer
+from spirit.utils.kraken_ohlc_buffer import KrakenOHLCBuffer
 
 __all__ = ["MultiIntervalLiveDataSource"]
 

@@ -5,8 +5,8 @@ trade_status.py
 Responsible for checking the Kraken API for any open trades and logging account balance when the program starts.
 """
 
-from logger import get_logger
-from utils.kraken_api_client import get_kraken_balances, get_open_orders
+from spirit.logger import get_logger
+from spirit.utils.kraken_api_client import get_kraken_balances, get_open_orders
 
 def check_open_trades_and_balance():
     """

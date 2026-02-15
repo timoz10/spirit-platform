@@ -30,20 +30,19 @@ class DataRequirements:
 
 class BaseStrategy(ABC):
     @abstractmethod
-    def evaluate_trade(self, mode="test", **kwargs):
+    def evaluate_trade(self, pair: str, mode: str = "test", **kwargs):
         """
         Main strategy interface for trade decision logic.
         Must return a standardized dict: {"entry": bool, "exit": bool, "details": {...}}
 
         Args:
+            pair: Trading pair symbol (e.g. 'XBTUSD') — REQUIRED.
             mode: "test", "paper", or "live"
-            **kwargs: Additional context from spirit_main. Strategies may use or
-                ignore these. Currently passed kwargs:
+            **kwargs: Additional context from the orchestrator:
                 - open_trade: TradeRecord or None — the current open trade state
 
-        For compatibility with spirit_main and trade_logic:
-        - In test mode, details MUST include either the full current row (as 'row') or at least the row's 'close' price.
-        - This ensures trade_logic can assign entry/exit prices and prevents missing price errors.
+        For compatibility with trade_logic:
+        - In test mode, details MUST include the row's 'close' price.
         - In live mode, price assignment is handled after order execution.
 
         Example:
@@ -52,8 +51,8 @@ class BaseStrategy(ABC):
                 "exit": False,
                 "details": {
                     "datetime": row["datetime"],
-                    "macd_cross": row["macd_cross"],
-                    "row": row  # Pass the full row for test mode
+                    "entry_price": row["close"],
+                    "symbol": pair,
                 }
             }
         """
@@ -74,12 +73,18 @@ class BaseStrategy(ABC):
             warmup_candles=720,
         )
 
-    def on_monitoring_tick(self, interval: int, candle: dict, open_trade) -> Optional[dict]:
+    def on_monitoring_tick(self, pair: str, interval: int, candle: dict, open_trade) -> Optional[dict]:
         """Handle sub-signal monitoring ticks (e.g. 1m ATR stop checks).
 
         Called for each monitoring_interval candle while a trade is open.
         Return an exit dict {"exit": True, "details": {...}} to trigger exit,
         or None to do nothing.
+
+        Args:
+            pair: Trading pair symbol
+            interval: Monitoring interval (minutes)
+            candle: Latest candle dict
+            open_trade: Current open TradeRecord
         """
         return None
 

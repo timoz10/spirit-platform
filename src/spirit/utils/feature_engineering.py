@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import ta
 
-from logger import get_logger
+from spirit.logger import get_logger
 logger = get_logger("feature_engineering")
 
 def add_features(df):

@@ -86,7 +86,7 @@ def _get_decisions(limit: int = 50) -> list:
 def _check_pg_health() -> dict:
     """Quick PG connectivity check."""
     try:
-        from utils.db_connection import execute_query
+        from spirit.utils.db_connection import execute_query
         row = execute_query("SELECT 1 AS ok", fetch='one')
         return {'connected': True}
     except Exception as e:
@@ -96,7 +96,7 @@ def _check_pg_health() -> dict:
 def _get_recent_trades(limit: int = 20) -> list:
     """Fetch recent trades from PG strategy_performance."""
     try:
-        from utils.db_connection import execute_query
+        from spirit.utils.db_connection import execute_query
         rows = execute_query(
             "SELECT * FROM strategy_performance "
             "WHERE source IN ('paper', 'live') "

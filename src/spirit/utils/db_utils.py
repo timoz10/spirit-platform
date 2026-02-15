@@ -1,50 +1,68 @@
+import threading
 import pandas as pd
-import sqlite3
-import concurrent.futures
-from system_config import DB_PATH as DEFAULT_DB_PATH
 
 
 class TimeoutException(Exception):
     pass
 
 
-# SpiritContext override: when set, get_spirit_temp_ti() reads from the
-# in-memory context instead of SQLite. Set by spirit_main.py when
-# SPIRIT_V2_CONTEXT=1.
-_spirit_context = None
+# Context storage: supports both single SpiritContext and ContextManager.
+# Thread-local _active_pair ensures each thread routes to the right pair.
+_spirit_context = None      # SpiritContext or ContextManager
+_active_pair = threading.local()
 
 
 def set_spirit_context(context):
-    """Register a SpiritContext as the data source for get_spirit_temp_ti()."""
+    """Register a SpiritContext or ContextManager as the data source."""
     global _spirit_context
     _spirit_context = context
 
 
-def _read_spirit_temp_ti(db_path):
-    try:
-        conn = sqlite3.connect(db_path, timeout=10)
-        df = pd.read_sql_query("SELECT * FROM spirit_temp_ti ORDER BY datetime ASC", conn)
-        conn.close()
-        return df
-    except Exception as e:
-        raise RuntimeError(f"Error reading from spirit_temp_ti: {e}")
+def set_active_pair(pair: str):
+    """Set the active pair for this thread (used by get_spirit_temp_ti routing)."""
+    _active_pair.pair = pair
 
 
-def get_spirit_temp_ti(timeout_seconds=30, db_path=DEFAULT_DB_PATH):
+def get_active_pair() -> str | None:
+    """Get the active pair for this thread, or None."""
+    return getattr(_active_pair, 'pair', None)
+
+
+def get_spirit_temp_ti(timeout_seconds=30, db_path=None, pair: str | None = None):
     """
     Fetch all rows from spirit_temp_ti as a DataFrame.
 
-    When SPIRIT_V2_CONTEXT is active, reads from in-memory SpiritContext
-    instead of SQLite. Falls back to SQLite if no context is registered.
-    """
-    # V2 path: read from in-memory context
-    if _spirit_context is not None:
-        return _spirit_context.get_feature_df()
+    Routing logic:
+      1. If ContextManager is registered: use explicit pair arg, else thread-local
+         _active_pair, else first pair in the manager.
+      2. If single SpiritContext: return its feature_df directly.
+      3. Otherwise: raise RuntimeError.
 
-    # V1 path: read from SQLite with timeout
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_read_spirit_temp_ti, db_path)
+    Args:
+        timeout_seconds: Ignored (kept for backward compat)
+        db_path: Ignored (kept for backward compat)
+        pair: Explicit pair to fetch. If None, uses thread-local active pair.
+    """
+    if _spirit_context is None:
+        raise RuntimeError(
+            "SpiritContext not initialized. Call set_spirit_context() first "
+            "(spirit_main.py does this automatically at startup)."
+        )
+
+    # Check if it's a ContextManager (has .get() and .all_pairs())
+    if hasattr(_spirit_context, 'all_pairs'):
+        p = pair or getattr(_active_pair, 'pair', None)
+        if p is None:
+            # Fallback to first pair
+            pairs = _spirit_context.all_pairs()
+            if pairs:
+                p = pairs[0]
+            else:
+                return pd.DataFrame()
         try:
-            return future.result(timeout=timeout_seconds)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutException(f"Timed out after {timeout_seconds}s while reading spirit_temp_ti from database.")
+            return _spirit_context.get(p).get_feature_df()
+        except KeyError:
+            return pd.DataFrame()
+
+    # Single SpiritContext path
+    return _spirit_context.get_feature_df()
