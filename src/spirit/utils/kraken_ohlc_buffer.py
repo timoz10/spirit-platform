@@ -4,9 +4,9 @@ import threading
 import time
 import pandas as pd
 from collections import deque
-from utils.kraken_api_client import get_ohlc_data
-from logger import logger
-from system_config import KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL, KRAKEN_OHLC_BUFFER_DELAY_SECONDS
+from spirit.utils.kraken_api_client import get_ohlc_data
+from spirit.logger import logger
+from spirit.config import KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL, KRAKEN_OHLC_BUFFER_DELAY_SECONDS
 
 class KrakenOHLCBuffer:
     def stop(self):
@@ -152,7 +152,7 @@ class KrakenOHLCBuffer:
                 logger.warning("[KrakenOHLCBuffer] Not enough candles returned to skip open candle.")
                 return
             # Convert list of dicts to OHLCRecord objects
-            from data_types import OHLCRecord
+            from spirit.data_types import OHLCRecord
             new_candles = []
             for candle in candles:
                 candle_dt = pd.to_datetime(candle['datetime'], utc=True)

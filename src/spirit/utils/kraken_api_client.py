@@ -30,7 +30,7 @@ KRAKEN_API_URL = os.environ.get('KRAKEN_API_BASE_URL', 'https://api.kraken.com')
 
 
 # Import config values
-from system_config import KRAKEN_PAIR, KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL
+from spirit.config import KRAKEN_PAIR, KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL
 
 
 # Helper to sign requests
@@ -55,7 +55,7 @@ def get_ohlc_data(count=KRAKEN_OHLC_COUNT, interval=KRAKEN_OHLC_INTERVAL, pair=K
         'pair': pair,
         'interval': interval
     }
-    from logger import logger
+    from spirit.logger import logger
     import os
     logger.debug(f"[get_ohlc_data] Requesting: url={url} params={params} (interval type={type(interval)})")
     headers = {
@@ -143,7 +143,7 @@ def get_ohlc_data(count=KRAKEN_OHLC_COUNT, interval=KRAKEN_OHLC_INTERVAL, pair=K
         last_ts = pd.to_datetime(candles[-1]['datetime'])
         if last_ts.tzinfo is None:
             last_ts = last_ts.tz_localize('UTC')
-        from logger import logger
+        from spirit.logger import logger
         logger.debug(f"[API][DEBUG] last_ts: {last_ts} (tz-aware={last_ts.tzinfo is not None}), open_candle_threshold: {open_candle_threshold}")
         if last_ts >= open_candle_threshold:
             logger.warning(f"[API] Dropping last row {last_ts} — appears to be open/incomplete candle.")
