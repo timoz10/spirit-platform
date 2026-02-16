@@ -45,6 +45,7 @@ class PaperOrderExecutor:
         self.volume_step = float(volume_step)
         self.cash = float(starting_equity)
         self._open_positions: Dict[str, _OpenPosition] = {}  # order_id → position
+        self._last_prices: Dict[str, float] = {}  # pair → last known bid price
         self.max_trade_usd = float(max_trade_usd)
         self.fee_pct = float(fee_pct)
         self._seq = 0
@@ -56,12 +57,15 @@ class PaperOrderExecutor:
 
     @property
     def equity(self) -> float:
-        """Portfolio value = cash + unrealized position value (at entry price).
+        """Portfolio value = cash + unrealized position value (mark-to-market).
 
-        Uses entry price as a conservative estimate. For a more accurate
-        mark-to-market, call mark_to_market() which fetches live prices.
+        Uses last known bid price per pair (updated on every ticker fetch).
+        Falls back to entry price if no market price is cached yet.
         """
-        position_value = sum(p.notional_usd for p in self._open_positions.values())
+        position_value = 0.0
+        for p in self._open_positions.values():
+            market_price = self._last_prices.get(p.pair, p.entry_price)
+            position_value += p.volume * market_price
         return self.cash + position_value
 
     @equity.setter
@@ -71,7 +75,10 @@ class PaperOrderExecutor:
         Adjusts cash to match — assumes no open positions at restore time
         (positions are restored separately via TradeStateManager).
         """
-        position_value = sum(p.notional_usd for p in self._open_positions.values())
+        position_value = 0.0
+        for p in self._open_positions.values():
+            market_price = self._last_prices.get(p.pair, p.entry_price)
+            position_value += p.volume * market_price
         self.cash = float(value) - position_value
 
     def _round_volume(self, volume: float) -> float:
@@ -86,7 +93,12 @@ class PaperOrderExecutor:
 
     def _get_ticker(self, pair: str = None) -> dict:
         from spirit.utils.kraken_api_client import get_ticker
-        return get_ticker(pair or self.pair)
+        p = pair or self.pair
+        ticker = get_ticker(p)
+        # Cache latest bid for mark-to-market equity
+        if 'bid' in ticker:
+            self._last_prices[p] = ticker['bid']
+        return ticker
 
     def _validate_order(self, side: str, volume: float, pair: str = None) -> dict:
         """Call Kraken AddOrder with validate=true to confirm order is valid."""
