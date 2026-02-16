@@ -6,12 +6,12 @@ from spirit.logger import get_logger
 logger = get_logger("feature_engineering")
 
 def add_features(df):
-    # Ensure chronological order for correct pct_change
-    try:
-        if 'datetime' in df.columns:
-            df = df.sort_values('datetime').reset_index(drop=True)
-    except Exception:
-        pass
+    # Ensure chronological order and zero-based index for correct pct_change
+    if 'datetime' in df.columns:
+        df['datetime'] = df['datetime'].astype(str)
+        df = df.sort_values('datetime').reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
     df['return'] = df['close'].pct_change()
     df['volatility'] = df['return'].rolling(window=5, min_periods=5).std()
     df['momentum'] = df['close'] - df['close'].rolling(window=5, min_periods=5).mean()
@@ -45,8 +45,8 @@ def add_features(df):
             macd_cross[i] = regime
             macd_cross_event[i] = 0
     # Ensure macd_cross is always integer for SQLite INTEGER column
-    df['macd_cross'] = pd.Series(macd_cross).astype(int)
-    df['macd_cross_event'] = macd_cross_event
+    df['macd_cross'] = pd.Series(macd_cross, index=df.index).astype(int)
+    df['macd_cross_event'] = pd.Series(macd_cross_event, index=df.index)
     df['rsi_14'] = df['rsi']  # For compatibility
     rolling_mean = df['close'].rolling(window=20, min_periods=20).mean()
     rolling_std = df['close'].rolling(window=20, min_periods=20).std()
@@ -242,7 +242,7 @@ def add_lazybear_impulse_macd(df, lengthMA=34, lengthSignal=9):
     lo = calc_smma(df['low'], lengthMA)
     mi = calc_zlema(src, lengthMA)
     md = np.where(mi > hi, mi - hi, np.where(mi < lo, mi - lo, 0))
-    sb = pd.Series(md).rolling(window=lengthSignal, min_periods=lengthSignal).mean()
+    sb = pd.Series(md, index=df.index).rolling(window=lengthSignal, min_periods=lengthSignal).mean()
     sh = md - sb
     # Color logic (for reference, not used in DataFrame)
     # mdc = np.where(src > mi, np.where(src > hi, 'lime', 'green'), np.where(src < lo, 'red', 'orange'))

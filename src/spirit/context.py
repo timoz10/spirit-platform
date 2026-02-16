@@ -235,7 +235,7 @@ class SpiritContext:
             if window_size >= 50:
                 try:
                     # Engineer on the window, then take the latest row's features
-                    window = interval_df.tail(window_size).copy()
+                    window = interval_df.tail(window_size).copy().reset_index(drop=True)
                     window = add_features(window)
                     # Replace the window portion in interval_df
                     interval_df = pd.concat([
