@@ -96,6 +96,10 @@ class BaseStrategy(ABC):
         """
         return (True, [])
 
+    def on_entry_confirmed(self, pair: str, signal, risk_decision) -> None:
+        """Called after RiskGate approves entry. Capture entry context for exit logic."""
+        pass
+
     @property
     def uses_risk_gate(self) -> bool:
         """Whether entries from this strategy route through RiskGate for sizing."""
