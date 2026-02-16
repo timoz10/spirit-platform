@@ -187,6 +187,10 @@ class SpiritOrchestrator:
                                 f"[{pair}][RISK_GATE] Sized: ${risk_decision.position_size_usd:.0f} "
                                 f"({risk_decision.profile_tier}, R:R={risk_decision.rr_ratio:.1f})"
                             )
+                            # Capture entry context for dynamic exit
+                            signal_for_exit = details.get('signal')
+                            if hasattr(strategy, 'on_entry_confirmed') and signal_for_exit:
+                                strategy.on_entry_confirmed(pair, signal_for_exit, risk_decision)
 
             if entry_flag and trade_record is not None:
                 process_trade_signals(
@@ -284,6 +288,10 @@ class SpiritOrchestrator:
                                 f"[{pair}:{strategy_name}][RISK_GATE] Sized: ${risk_decision.position_size_usd:.0f} "
                                 f"({risk_decision.profile_tier}, R:R={risk_decision.rr_ratio:.1f})"
                             )
+                            # Capture entry context for dynamic exit
+                            signal_for_exit = details.get('signal')
+                            if hasattr(strategy, 'on_entry_confirmed') and signal_for_exit:
+                                strategy.on_entry_confirmed(pair, signal_for_exit, risk_decision)
 
             # Check concurrency limit before opening
             if entry_flag and trade_record is not None:
