@@ -216,6 +216,153 @@ class KrakenOrderExecutor:
         except Exception as e:
             logger.error(f"[LIVE] Failed to write to strategy_performance: {e}")
 
+    def place_limit_order(self, trade_record, limit_price: float) -> dict:
+        """
+        Place a limit buy order. Does NOT wait for fill — returns immediately
+        with txid. Caller is responsible for polling check_order_status().
+        """
+        from spirit.config import TRADE_USD_AMOUNT
+        from utils import kraken_api_client as kc
+
+        submitted_at = datetime.now(timezone.utc)
+
+        # Get ticker for volume calculation
+        try:
+            ticker = self._get_ticker()
+            ask_price = ticker['ask']
+        except Exception as e:
+            logger.error(f"[LIVE] Ticker fetch failed for limit order: {e}")
+            raise
+
+        # Determine USD size
+        buy_usd = getattr(trade_record, 'buy_amount', None)
+        if buy_usd is None:
+            buy_usd = TRADE_USD_AMOUNT
+
+        buy_usd = float(buy_usd)
+        # Convert USD to volume at limit price
+        volume = self._round_volume(buy_usd / limit_price)
+
+        logger.info(
+            f"[LIVE] Placing LIMIT BUY: pair={self.pair} "
+            f"price={limit_price:.2f} volume={volume}"
+        )
+
+        result = kc.place_order(
+            self.pair, "buy", volume,
+            price=limit_price, ordertype="limit", validate=False,
+        )
+
+        txids = result.get("txid") or []
+        if not txids:
+            logger.error(f"[LIVE] No txid from limit order: {result}")
+            return result
+
+        txid = txids[0]
+        trade_record.order_id = txid
+        trade_record.order_type = 'limit'
+        trade_record.limit_price = limit_price
+        self._entry_txid = txid
+
+        logger.info(
+            f"[LIVE LIMIT BUY] txid={txid} limit={limit_price:.2f} "
+            f"vol={volume:.6f} notional=${buy_usd:.2f}"
+        )
+        return result
+
+    def check_order_status(self, txid: str) -> dict:
+        """
+        Query order status without waiting. Returns dict with:
+        status, fill_price, fill_volume, fill_fee, fill_cost.
+        """
+        from spirit.utils.kraken_order_info import get_order_info
+
+        try:
+            result = get_order_info(txid)
+            order_data = result.get(txid, {})
+            return {
+                'status': order_data.get('status', 'unknown'),
+                'fill_price': float(order_data.get('price', 0)) or None,
+                'fill_volume': float(order_data.get('vol_exec', 0)) or None,
+                'fill_fee': float(order_data.get('fee', 0)) or None,
+                'fill_cost': float(order_data.get('cost', 0)) or None,
+                'raw': order_data,
+            }
+        except Exception as e:
+            logger.warning(f"[LIVE] check_order_status({txid}) failed: {e}")
+            return {'status': 'error', 'fill_price': None, 'fill_volume': None,
+                    'fill_fee': None, 'fill_cost': None, 'raw': {}}
+
+    def cancel_order(self, txid: str) -> bool:
+        """Cancel an unfilled limit order. Returns True on success."""
+        from utils import kraken_api_client as kc
+
+        try:
+            kc.close_order(txid)
+            logger.info(f"[LIVE] Cancelled order: txid={txid}")
+            return True
+        except Exception as e:
+            logger.error(f"[LIVE] Failed to cancel {txid}: {e}")
+            return False
+
+    def finalize_limit_fill(self, txid: str, trade_record) -> None:
+        """
+        After a limit order is confirmed filled: update trade_record fields,
+        record to live_orders, and update equity.
+        """
+        from spirit.utils.kraken_order_info import get_order_info
+
+        submitted_at = datetime.now(timezone.utc)
+
+        try:
+            result = get_order_info(txid)
+            fill_data = result.get(txid, {})
+        except Exception as e:
+            logger.error(f"[LIVE] finalize_limit_fill query failed: {e}")
+            fill_data = {}
+
+        fill_price = float(fill_data.get('price', 0)) or None
+        fill_cost = float(fill_data.get('cost', 0)) or 0.0
+        fill_fee = float(fill_data.get('fee', 0)) or 0.0
+        fill_vol = float(fill_data.get('vol_exec', 0)) or 0.0
+
+        signal_price = trade_record.limit_price or trade_record.entry_price
+
+        # Update trade_record with actual fill
+        trade_record.signal_entry_price = signal_price
+        if fill_price:
+            trade_record.entry_price = fill_price
+        trade_record.buy_amount = fill_vol
+        trade_record.mode = 'live'
+        trade_record.fee = fill_fee
+        if fill_price and signal_price:
+            trade_record.slippage = fill_price - signal_price
+
+        # Update equity
+        self.equity -= (fill_cost + fill_fee)
+
+        # Record to live_orders
+        try:
+            ticker = self._get_ticker()
+            mid_price = (ticker['ask'] + ticker['bid']) / 2.0
+        except Exception:
+            mid_price = None
+
+        strategy_name = getattr(trade_record, 'strategy_name', None)
+        self._record_to_live_orders(
+            txid=txid, side='buy', ordertype='limit',
+            requested_volume=fill_vol, fill_data=fill_data,
+            submitted_at=submitted_at, mid_price=mid_price,
+            signal_price=signal_price, strategy_name=strategy_name,
+            trade_side='entry',
+        )
+
+        logger.info(
+            f"[LIVE LIMIT FILL] txid={txid} fill={fill_price} "
+            f"vol={fill_vol:.6f} cost=${fill_cost:.2f} "
+            f"fee=${fill_fee:.4f} equity=${self.equity:.2f}"
+        )
+
     def place_order(self, trade_record) -> dict:
         """
         Place a buy order using trade_record fields.

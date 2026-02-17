@@ -40,3 +40,5 @@ class TradeRecord:
     mode: Optional[str] = None
     fee: Optional[float] = None
     slippage: Optional[float] = None
+    order_type: Optional[str] = None
+    limit_price: Optional[float] = None
