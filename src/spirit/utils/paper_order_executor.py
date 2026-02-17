@@ -107,6 +107,148 @@ class PaperOrderExecutor:
             pair or self.pair, side, volume, ordertype='market', validate=True,
         )
 
+    def place_limit_order(self, trade_record, limit_price: float) -> dict:
+        """
+        Paper LIMIT BUY: validate with Kraken, return paper txid.
+        Does NOT deduct cash yet — cash is deducted on fill via finalize_limit_fill().
+        """
+        pair = getattr(trade_record, 'symbol', None) or self.pair
+
+        # Get real ask price for validation
+        ticker = self._get_ticker(pair)
+
+        # Determine USD size (capped)
+        buy_usd = getattr(trade_record, 'buy_amount', None)
+        if buy_usd is None:
+            from spirit.config import TRADE_USD_AMOUNT
+            buy_usd = TRADE_USD_AMOUNT
+        buy_usd = float(buy_usd)
+
+        # Convert to volume at limit price
+        if buy_usd < 1.0 and limit_price > 100:
+            buy_usd = buy_usd * limit_price
+        buy_usd = min(buy_usd, self.max_trade_usd, max(0.0, self.cash))
+
+        if buy_usd <= 0:
+            logger.warning("[PAPER] Insufficient cash for limit order")
+            return {}
+
+        volume = self._round_volume(buy_usd / limit_price)
+
+        # Validate with Kraken
+        try:
+            self._validate_order('buy', volume, pair)
+        except Exception as e:
+            logger.error(f"[PAPER] Limit order validation failed: {e}")
+            return {}
+
+        order_id = self._next_order_id()
+        trade_record.order_id = order_id
+        trade_record.order_type = 'limit'
+        trade_record.limit_price = limit_price
+
+        # Store pending limit for fill simulation
+        if not hasattr(self, '_pending_limits'):
+            self._pending_limits: Dict[str, dict] = {}
+
+        self._pending_limits[order_id] = {
+            'pair': pair,
+            'limit_price': limit_price,
+            'volume': volume,
+            'buy_usd': buy_usd,
+            'placed_at': time.time(),
+        }
+
+        logger.info(
+            f"[PAPER LIMIT BUY] txid={order_id} limit={limit_price:.2f} "
+            f"vol={volume:.6f} notional=${buy_usd:.2f} "
+            f"cash=${self.cash:.2f}"
+        )
+        return {'txid': [order_id], 'descr': {'order': f'paper limit buy {volume} {pair} @ {limit_price}'}}
+
+    def check_limit_fill(self, txid: str, candle: dict) -> dict:
+        """
+        Simulate limit fill: if candle low <= limit_price, order is filled
+        at the limit price (conservative simulation).
+
+        Returns dict with 'status': 'closed' (filled) or 'open' (not yet).
+        """
+        if not hasattr(self, '_pending_limits'):
+            return {'status': 'unknown'}
+
+        pending = self._pending_limits.get(txid)
+        if pending is None:
+            return {'status': 'unknown'}
+
+        low = float(candle.get('low', float('inf')))
+        limit_price = pending['limit_price']
+
+        if low <= limit_price:
+            return {
+                'status': 'closed',
+                'fill_price': limit_price,
+                'fill_volume': pending['volume'],
+                'fill_fee': pending['buy_usd'] * (self.fee_pct / 100.0) / 2.0,
+                'fill_cost': pending['buy_usd'],
+            }
+
+        return {'status': 'open', 'fill_price': None, 'fill_volume': None,
+                'fill_fee': None, 'fill_cost': None}
+
+    def cancel_order(self, txid: str) -> bool:
+        """Remove a pending limit order (paper mode)."""
+        if not hasattr(self, '_pending_limits'):
+            return False
+
+        if txid in self._pending_limits:
+            del self._pending_limits[txid]
+            logger.info(f"[PAPER] Cancelled limit order: txid={txid}")
+            return True
+        return False
+
+    def finalize_limit_fill(self, txid: str, trade_record) -> None:
+        """
+        After simulated fill: deduct cash, create _OpenPosition, update trade_record.
+        """
+        if not hasattr(self, '_pending_limits'):
+            return
+
+        pending = self._pending_limits.pop(txid, None)
+        if pending is None:
+            logger.warning(f"[PAPER] finalize_limit_fill: no pending order for {txid}")
+            return
+
+        pair = pending['pair']
+        limit_price = pending['limit_price']
+        volume = pending['volume']
+        buy_usd = pending['buy_usd']
+        entry_fee_usd = buy_usd * (self.fee_pct / 100.0) / 2.0
+
+        # Deduct cash and track position
+        self.cash -= (buy_usd + entry_fee_usd)
+        self._open_positions[txid] = _OpenPosition(
+            pair=pair,
+            volume=volume,
+            entry_price=limit_price,
+            notional_usd=buy_usd,
+            order_id=txid,
+        )
+
+        # Update trade_record
+        trade_record.signal_entry_price = trade_record.entry_price
+        trade_record.entry_price = limit_price
+        trade_record.slippage = 0.0  # Limit fill at exact price
+        trade_record.buy_amount = volume
+        trade_record.order_id = txid
+        trade_record.mode = 'paper'
+        trade_record.fee = entry_fee_usd
+
+        logger.info(
+            f"[PAPER LIMIT FILL] fill={limit_price:.2f} vol={volume:.6f} "
+            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} "
+            f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
+        )
+
     def place_order(self, trade_record) -> dict:
         """
         Paper BUY: validate via API, fetch ask price from Ticker, record fill.

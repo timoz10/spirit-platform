@@ -48,6 +48,11 @@ OHLC_TARGET_TABLE = os.environ.get('OHLC_TARGET_TABLE', 'ohlc')
 OHLC_PAIRS = os.environ.get('OHLC_PAIRS', 'XBTUSD').split(',')  # comma-separated
 OHLC_INTERVALS = [int(x) for x in os.environ.get('OHLC_INTERVALS', '1,60').split(',')]
 
+# --- Limit order settings ---
+LIMIT_ORDER_MODE = get_config('LIMIT_ORDER_MODE', 'market')
+LIMIT_ORDER_TTL_MINUTES = int(get_config('LIMIT_ORDER_TTL_MINUTES', '60'))
+LIMIT_ORDER_OFFSET_PCT = float(get_config('LIMIT_ORDER_OFFSET_PCT', '0.0'))
+
 # --- Strategy selection ---
 # Set SPIRIT_STRATEGY env var to load a trading algorithm.
 # If not set, Spirit starts in monitor-only mode (no trades).
