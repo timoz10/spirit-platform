@@ -88,6 +88,20 @@ class BaseStrategy(ABC):
         """
         return None
 
+    def on_entry_scan_tick(self, pair: str, interval: int, candle: dict) -> Optional[dict]:
+        """Called on monitoring-interval ticks when NO trade is open.
+
+        Override to detect entry opportunities on sub-signal-interval candles.
+        Return dict with 'entry': True and 'details' to trigger entry,
+        or None to do nothing.
+
+        Args:
+            pair: Trading pair symbol
+            interval: Monitoring interval (minutes)
+            candle: Latest candle dict (e.g. 1m OHLCV)
+        """
+        return None
+
     def validate_readiness(self) -> Tuple[bool, List[str]]:
         """Post-warmup green-light check.
 
