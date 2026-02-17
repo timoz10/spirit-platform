@@ -57,6 +57,10 @@ class TradeSignal:
     # Exit context (only when action=EXIT)
     exit_reason: Optional[str] = None
 
+    # Order type (market or limit)
+    order_type: str = 'market'                    # 'market' | 'limit'
+    limit_price: Optional[float] = None           # Zone price_level for limits
+
     # Raw row data for TradeRecord construction
     row_data: Dict = field(default_factory=dict)
 

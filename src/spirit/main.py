@@ -38,6 +38,7 @@ from spirit.trade_logic import (
     MultiStrategyTradeStateManager,
     process_trade_signals,
 )
+from spirit.pending_order_manager import PendingOrderManager, PendingLimitOrder
 
 
 _ENTRY_COPY_ATTRS = [
@@ -73,6 +74,14 @@ class SpiritOrchestrator:
         self.registry = registry                     # StrategyRegistry (None for non-Spine)
         self.data_source = None  # set after data source creation
         self.csv_thread = None
+
+        # Pending limit order manager
+        self.pending_orders = PendingOrderManager()
+
+        # Limit order config
+        from spirit.config import LIMIT_ORDER_MODE, LIMIT_ORDER_TTL_MINUTES
+        self.limit_order_mode = LIMIT_ORDER_MODE
+        self.limit_order_ttl = LIMIT_ORDER_TTL_MINUTES
 
         # Web dashboard helpers (None = disabled)
         self._update_state = update_state
@@ -382,11 +391,13 @@ class SpiritOrchestrator:
             self._cb_logger.exception(f"[{pair}:{strategy_name}] Exception in _monitor_pair_strategy: {e}")
 
     def _monitor_pair(self, pair, interval_val, window_df):
-        """Route monitoring-interval candles to exit monitoring or entry scanning.
+        """Route monitoring-interval candles to exit monitoring, pending limit check,
+        or entry scanning.
 
-        When a trade is open: delegates to strategy.on_monitoring_tick() for exit checks.
-        When no trade is open: delegates to strategy.on_entry_scan_tick() for sub-signal
-        entry detection (e.g. 1m zone proximity).
+        Three-state routing:
+        1. Trade open     -> exit monitoring (unchanged)
+        2. Pending limit  -> _check_pending_limit() (check fill/expiry)
+        3. No trade       -> entry scan -> _process_entry() (may place limit)
         """
         tsm = self.trade_state_manager.get(pair)
         strategy = self.strategies.get(pair)
@@ -403,7 +414,7 @@ class SpiritOrchestrator:
             set_active_pair(pair)
 
             if tsm.open_trade is not None:
-                # EXISTING: exit monitoring (unchanged)
+                # State 1: exit monitoring (unchanged)
                 result = strategy.on_monitoring_tick(
                     pair, int(interval_val), candle_dict, tsm.open_trade
                 )
@@ -412,8 +423,11 @@ class SpiritOrchestrator:
                     trade_record = self._build_trade_record(details)
                     if trade_record is not None and tsm.open_trade is not None:
                         self._process_exit(pair, trade_record)
+            elif self.pending_orders.has_pending(pair):
+                # State 2: check pending limit order
+                self._check_pending_limit(pair, candle_dict)
             else:
-                # NEW: entry scan on sub-signal ticks
+                # State 3: entry scan on sub-signal ticks
                 result = strategy.on_entry_scan_tick(pair, int(interval_val), candle_dict)
                 if result and result.get('entry'):
                     self._process_entry(pair, result)
@@ -452,7 +466,11 @@ class SpiritOrchestrator:
     # -----------------------------------------------------------------
 
     def graceful_shutdown(self, no_pause=False, is_csv=False):
-        """Save state for all pairs and clean up."""
+        """Save state for all pairs and clean up. Cancel all pending limit orders."""
+        # Cancel all pending limit orders before shutdown
+        for pair, pending in list(self.pending_orders.all_pending().items()):
+            self._cancel_pending_limit(pair, pending, reason='shutdown')
+
         self.context_manager.save_all()
         self.logger.info("Final state saved to PG for all pairs")
 
@@ -532,20 +550,26 @@ class SpiritOrchestrator:
                         strategy.on_entry_confirmed(pair, signal_for_exit, risk_decision)
 
         if entry_flag and trade_record is not None:
-            process_trade_signals(
-                "buy", trade_record, self.mode, tsm,
-                order_executor=self.order_executor, logger=self._cb_logger,
-            )
-            if tsm.open_trade is not None:
-                ctx.set_open_trade(tsm.open_trade)
-            if self._update_state and tsm.open_trade is not None:
-                ot = tsm.open_trade
-                self._update_state(open_trade={
-                    'pair': pair,
-                    'entry_price': getattr(ot, 'entry_price', None),
-                    'entry_datetime': str(getattr(ot, 'entry_datetime', '')),
-                    'buy_amount': getattr(ot, 'buy_amount', None),
-                })
+            # Branch on order type: limit orders get placed as pending,
+            # market orders execute immediately (existing path)
+            order_type = getattr(trade_record, 'order_type', None) or 'market'
+            if order_type == 'limit' and self.mode in ('live', 'paper'):
+                self._place_pending_limit(pair, trade_record, details)
+            else:
+                process_trade_signals(
+                    "buy", trade_record, self.mode, tsm,
+                    order_executor=self.order_executor, logger=self._cb_logger,
+                )
+                if tsm.open_trade is not None:
+                    ctx.set_open_trade(tsm.open_trade)
+                if self._update_state and tsm.open_trade is not None:
+                    ot = tsm.open_trade
+                    self._update_state(open_trade={
+                        'pair': pair,
+                        'entry_price': getattr(ot, 'entry_price', None),
+                        'entry_datetime': str(getattr(ot, 'entry_datetime', '')),
+                        'buy_amount': getattr(ot, 'buy_amount', None),
+                    })
 
     def _process_exit(self, pair, trade_record):
         """Common exit logic for a specific pair."""
@@ -570,6 +594,154 @@ class SpiritOrchestrator:
         if self._update_state:
             eq = self.order_executor.equity if (self.order_executor and hasattr(self.order_executor, 'equity')) else None
             self._update_state(open_trade=None, **(({'equity': eq}) if eq is not None else {}))
+
+    def _place_pending_limit(self, pair, trade_record, details):
+        """Place a limit order on the exchange and register as pending.
+
+        Called from _process_entry() when order_type == 'limit'.
+        """
+        if self.order_executor is None:
+            self._cb_logger.warning(f"[{pair}] Cannot place limit: no order executor")
+            return
+
+        limit_price = getattr(trade_record, 'limit_price', None)
+        if limit_price is None:
+            self._cb_logger.warning(f"[{pair}] Cannot place limit: no limit_price")
+            return
+
+        try:
+            result = self.order_executor.place_limit_order(trade_record, limit_price)
+            txids = result.get('txid') or []
+            if not txids:
+                self._cb_logger.error(f"[{pair}] Limit order returned no txid")
+                return
+
+            txid = txids[0]
+
+            # Build signal context for fill handoff
+            signal_context = {
+                'signal': details.get('signal'),
+                'trade_record_dict': trade_record.__dict__.copy(),
+            }
+
+            pending = PendingLimitOrder(
+                pair=pair,
+                txid=txid,
+                limit_price=limit_price,
+                zone_id=details.get('signal') and getattr(details['signal'], 'zone_id', None),
+                ttl_minutes=self.limit_order_ttl,
+                buy_amount_usd=getattr(trade_record, 'buy_amount', 0) or 0,
+                volume=getattr(trade_record, 'buy_amount', 0) or 0,
+                signal_context=signal_context,
+            )
+            self.pending_orders.place(pending)
+
+        except Exception as e:
+            self._cb_logger.error(f"[{pair}] Failed to place limit order: {e}")
+
+    def _check_pending_limit(self, pair, candle):
+        """Check a pending limit order for fill or expiry.
+
+        Called every 1m tick when a limit order is pending for this pair.
+        """
+        pending = self.pending_orders.get_pending(pair)
+        if pending is None:
+            return
+
+        # Check expiry first
+        if pending.is_expired:
+            self._cancel_pending_limit(pair, pending, reason='expired')
+            return
+
+        # Check fill status
+        if self.mode == 'paper':
+            fill_status = self.order_executor.check_limit_fill(pending.txid, candle)
+        else:
+            fill_status = self.order_executor.check_order_status(pending.txid)
+
+        status = fill_status.get('status', 'unknown')
+
+        if status == 'closed':
+            # Filled — transition to open trade
+            self._on_limit_filled(pair, pending, fill_status)
+        elif status in ('canceled', 'expired'):
+            # Exchange cancelled the order
+            self.pending_orders.remove(pair)
+            self._cb_logger.info(
+                f"[{pair}][LIMIT_CANCEL] Exchange {status}: txid={pending.txid}"
+            )
+
+    def _on_limit_filled(self, pair, pending, fill_status):
+        """Handle a filled limit order — transition to open trade.
+
+        Rebuilds TradeRecord from pending signal_context, finalizes fill
+        with order executor, and opens trade in TSM.
+        """
+        ctx = self.context_manager.get(pair)
+        tsm = self.trade_state_manager.get(pair)
+        strategy = self.strategies.get(pair)
+
+        # Rebuild TradeRecord from signal context
+        tr_dict = pending.signal_context.get('trade_record_dict', {})
+        trade_record = self._build_trade_record(tr_dict)
+        if trade_record is None:
+            trade_record = TradeRecord(
+                entry_price=pending.limit_price,
+                symbol=pair,
+                strategy_name='zone_bounce',
+                mode=self.mode,
+            )
+
+        # Finalize fill with order executor (updates equity, records to PG)
+        self.order_executor.finalize_limit_fill(pending.txid, trade_record)
+
+        self._cb_logger.info(
+            f"[{pair}][LIMIT_FILLED] txid={pending.txid} "
+            f"fill={trade_record.entry_price} zone_id={pending.zone_id} "
+            f"age={pending.age_minutes:.1f}m"
+        )
+
+        # Open trade in TSM (same as market order path)
+        tsm.open(trade_record)
+        if tsm.open_trade is not None:
+            ctx.set_open_trade(tsm.open_trade)
+
+        # Capture entry context for dynamic exit
+        signal = pending.signal_context.get('signal')
+        if strategy and hasattr(strategy, 'on_entry_confirmed') and signal:
+            # Build a minimal RiskDecision from the signal context
+            try:
+                from spirit.trade_signal import RiskDecision
+                risk_decision = RiskDecision(
+                    trade=True,
+                    position_size_usd=getattr(trade_record, 'buy_amount', 0) or 0,
+                )
+                strategy.on_entry_confirmed(pair, signal, risk_decision)
+            except Exception as e:
+                self._cb_logger.debug(f"[{pair}] on_entry_confirmed after limit fill: {e}")
+
+        if self._update_state and tsm.open_trade is not None:
+            ot = tsm.open_trade
+            self._update_state(open_trade={
+                'pair': pair,
+                'entry_price': getattr(ot, 'entry_price', None),
+                'entry_datetime': str(getattr(ot, 'entry_datetime', '')),
+                'buy_amount': getattr(ot, 'buy_amount', None),
+            })
+
+        # Clear pending state
+        self.pending_orders.remove(pair)
+
+    def _cancel_pending_limit(self, pair, pending, reason='manual'):
+        """Cancel a pending limit order on the exchange and clean up state."""
+        if self.order_executor is not None:
+            self.order_executor.cancel_order(pending.txid)
+
+        self.pending_orders.remove(pair)
+        self._cb_logger.info(
+            f"[{pair}][LIMIT_CANCEL] reason={reason} txid={pending.txid} "
+            f"age={pending.age_minutes:.1f}m"
+        )
 
     @staticmethod
     def _build_trade_record(details):
@@ -791,6 +963,25 @@ def main():
             logger.info(f"[{pair}] Restored equity: ${ctx.equity:.2f}")
             if risk_gate:
                 risk_gate.update_equity(ctx.equity)
+
+    # Startup reconciliation: cancel orphaned limit orders from previous session
+    if trading_enabled and args.mode == 'live' and order_executor is not None:
+        try:
+            from utils.kraken_api_client import get_open_orders
+            open_orders = get_open_orders()
+            orphaned = open_orders.get('open', {})
+            if orphaned:
+                from utils.kraken_api_client import close_order as cancel_kraken_order
+                for txid, order_data in orphaned.items():
+                    descr = order_data.get('descr', {})
+                    if descr.get('ordertype') == 'limit' and descr.get('type') == 'buy':
+                        try:
+                            cancel_kraken_order(txid)
+                            logger.info(f"[STARTUP] Cancelled orphaned limit order: {txid}")
+                        except Exception as e:
+                            logger.warning(f"[STARTUP] Failed to cancel {txid}: {e}")
+        except Exception as e:
+            logger.debug(f"[STARTUP] Open orders check skipped: {e}")
 
     # Primary interval and monitoring intervals
     interval = requirements.signal_interval if requirements is not None else int(KRAKEN_OHLC_INTERVAL)
