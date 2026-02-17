@@ -382,10 +382,15 @@ class SpiritOrchestrator:
             self._cb_logger.exception(f"[{pair}:{strategy_name}] Exception in _monitor_pair_strategy: {e}")
 
     def _monitor_pair(self, pair, interval_val, window_df):
-        """Route monitoring-interval candles to strategy.on_monitoring_tick()."""
+        """Route monitoring-interval candles to exit monitoring or entry scanning.
+
+        When a trade is open: delegates to strategy.on_monitoring_tick() for exit checks.
+        When no trade is open: delegates to strategy.on_entry_scan_tick() for sub-signal
+        entry detection (e.g. 1m zone proximity).
+        """
         tsm = self.trade_state_manager.get(pair)
         strategy = self.strategies.get(pair)
-        if not strategy or tsm.open_trade is None:
+        if not strategy:
             return
         try:
             records = getattr(window_df, 'records', None)
@@ -397,14 +402,21 @@ class SpiritOrchestrator:
             from spirit.utils.db_utils import set_active_pair
             set_active_pair(pair)
 
-            result = strategy.on_monitoring_tick(
-                pair, int(interval_val), candle_dict, tsm.open_trade
-            )
-            if result and result.get('exit'):
-                details = result.get('details', {})
-                trade_record = self._build_trade_record(details)
-                if trade_record is not None and tsm.open_trade is not None:
-                    self._process_exit(pair, trade_record)
+            if tsm.open_trade is not None:
+                # EXISTING: exit monitoring (unchanged)
+                result = strategy.on_monitoring_tick(
+                    pair, int(interval_val), candle_dict, tsm.open_trade
+                )
+                if result and result.get('exit'):
+                    details = result.get('details', {})
+                    trade_record = self._build_trade_record(details)
+                    if trade_record is not None and tsm.open_trade is not None:
+                        self._process_exit(pair, trade_record)
+            else:
+                # NEW: entry scan on sub-signal ticks
+                result = strategy.on_entry_scan_tick(pair, int(interval_val), candle_dict)
+                if result and result.get('entry'):
+                    self._process_entry(pair, result)
         except Exception as e:
             self._cb_logger.exception(f"[{pair}] Exception in _monitor_pair: {e}")
 
@@ -465,6 +477,75 @@ class SpiritOrchestrator:
     # -----------------------------------------------------------------
     # Private helpers
     # -----------------------------------------------------------------
+
+    def _process_entry(self, pair, result):
+        """Common entry logic extracted from _evaluate_pair().
+
+        Handles RiskGate evaluation, process_trade_signals("buy"),
+        state updates, and web dashboard recording.
+
+        Args:
+            pair: Trading pair symbol
+            result: Strategy result dict with 'entry', 'details', etc.
+        """
+        ctx = self.context_manager.get(pair)
+        tsm = self.trade_state_manager.get(pair)
+        strategy = self.strategies.get(pair)
+
+        entry_flag = bool(result.get('entry', False))
+        details = result.get('details') or {}
+        trade_record = self._build_trade_record(details)
+
+        # Record signal to web dashboard
+        if self._web_sig and details.get('signal') is not None:
+            sig = details['signal']
+            self._web_sig({
+                'datetime': getattr(sig, 'datetime', None),
+                'confidence_score': getattr(sig, 'confidence_score', None),
+                'zone_id': getattr(sig, 'zone_id', None),
+                'regime': getattr(sig, 'regime', None),
+                'price': getattr(sig, 'price', None),
+                'pair': pair,
+            })
+
+        # RiskGate integration
+        if self.risk_gate and entry_flag and trade_record is not None:
+            signal = details.get('signal')
+            if signal is not None:
+                risk_decision = self.risk_gate.evaluate(signal)
+                if self._web_dec:
+                    self._web_dec(risk_decision.to_dict())
+                if not risk_decision.trade:
+                    self._cb_logger.info(
+                        f"[{pair}][RISK_GATE] Skipped: {risk_decision.skip_reason}"
+                    )
+                    entry_flag = False
+                else:
+                    trade_record.buy_amount = risk_decision.position_size_usd
+                    self._cb_logger.info(
+                        f"[{pair}][RISK_GATE] Sized: ${risk_decision.position_size_usd:.0f} "
+                        f"({risk_decision.profile_tier}, R:R={risk_decision.rr_ratio:.1f})"
+                    )
+                    # Capture entry context for dynamic exit
+                    signal_for_exit = details.get('signal')
+                    if strategy and hasattr(strategy, 'on_entry_confirmed') and signal_for_exit:
+                        strategy.on_entry_confirmed(pair, signal_for_exit, risk_decision)
+
+        if entry_flag and trade_record is not None:
+            process_trade_signals(
+                "buy", trade_record, self.mode, tsm,
+                order_executor=self.order_executor, logger=self._cb_logger,
+            )
+            if tsm.open_trade is not None:
+                ctx.set_open_trade(tsm.open_trade)
+            if self._update_state and tsm.open_trade is not None:
+                ot = tsm.open_trade
+                self._update_state(open_trade={
+                    'pair': pair,
+                    'entry_price': getattr(ot, 'entry_price', None),
+                    'entry_datetime': str(getattr(ot, 'entry_datetime', '')),
+                    'buy_amount': getattr(ot, 'buy_amount', None),
+                })
 
     def _process_exit(self, pair, trade_record):
         """Common exit logic for a specific pair."""
