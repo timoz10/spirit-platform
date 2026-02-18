@@ -255,6 +255,57 @@ def _check_disk_space() -> CheckResult:
         )
 
 
+def _check_profiler_data() -> CheckResult:
+    """Verify the risk/reward profiler can load OHLC and D-Limit data for current dates."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        from spirit.indicators.decision_engine.engine.risk_reward_profiler import RiskRewardProfiler
+        from spirit.utils.config_loader import get_config
+
+        pairs_str = get_config('SPIRIT_PAIRS', 'XBTUSD')
+        pair = pairs_str.split(',')[0].strip()  # Test with first configured pair
+
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=30)).strftime('%Y-%m-%d')
+        end = now.strftime('%Y-%m-%d %H:%M:%S')
+
+        p = RiskRewardProfiler()
+        p.load_ohlc(pair=pair, start_date=start, end_date=end)
+        p.load_dlimit(pair=pair, start_date=start, end_date=end)
+
+        ohlc_count = len(p._ohlc_df) if p._ohlc_df is not None else 0
+        dlimit_count = len(p._dlimit_df) if p._dlimit_df is not None else 0
+
+        issues = []
+        if ohlc_count == 0:
+            issues.append(f'{pair} OHLC=0')
+        if dlimit_count == 0:
+            issues.append(f'{pair} D-Limit=0')
+
+        if issues:
+            return CheckResult(
+                name='profiler_data',
+                passed=False,
+                severity='WARN',
+                message=f'Profiler loaded empty data: {", ".join(issues)}',
+                detail=f'Risk gate will block all trades. Check year-partitioned tables for {now.year}.',
+            )
+        return CheckResult(
+            name='profiler_data',
+            passed=True,
+            severity='WARN',
+            message=f'Profiler data OK: {pair} OHLC={ohlc_count}, D-Limit={dlimit_count}',
+        )
+    except Exception as e:
+        return CheckResult(
+            name='profiler_data',
+            passed=False,
+            severity='WARN',
+            message='Failed to check profiler data',
+            detail=str(e),
+        )
+
+
 def run_preflight() -> PreflightResult:
     """
     Run all pre-flight checks. Returns PreflightResult.
@@ -268,6 +319,7 @@ def run_preflight() -> PreflightResult:
         _check_pg_tables(),
         _check_kraken_keys(),
         _check_ohlc_freshness(),
+        _check_profiler_data(),
         _check_disk_space(),
     ]
 
