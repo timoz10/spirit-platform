@@ -114,6 +114,11 @@ class BaseStrategy(ABC):
         """Called after RiskGate approves entry. Capture entry context for exit logic."""
         pass
 
+    def on_exit_completed(self, pair: str, exit_reason: str,
+                          exit_price: float, entry_price: float) -> None:
+        """Called after trade exit is processed. Update cooldowns, clean up state."""
+        pass
+
     @property
     def uses_risk_gate(self) -> bool:
         """Whether entries from this strategy route through RiskGate for sizing."""
