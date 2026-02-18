@@ -347,12 +347,26 @@ class SpiritOrchestrator:
             tsm = self.trade_state_manager.get(pair)
         ctx = self.context_manager.get(pair)
 
+        # Capture entry price before sell clears open_trade
+        entry_price = float(getattr(tsm.open_trade, 'entry_price', 0) or 0)
+
         for attr in _ENTRY_COPY_ATTRS:
             setattr(trade_record, attr, getattr(tsm.open_trade, attr, None))
         process_trade_signals(
             "sell", trade_record, self.mode, tsm,
             order_executor=self.order_executor, logger=self._cb_logger,
         )
+
+        # Notify strategy of exit
+        exit_price = float(getattr(trade_record, 'exit_price', 0) or 0)
+        exit_reason = getattr(trade_record, 'exit_reason', '') or ''
+        strategy = self.strategies.get(pair)
+        if strategy and hasattr(strategy, 'on_exit_completed'):
+            try:
+                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price)
+            except Exception as e:
+                self._cb_logger.debug(f"[{pair}:{strategy_name}] on_exit_completed error: {e}")
+
         if self.risk_gate and self.mode in ('paper', 'live') and self.order_executor is not None:
             self.risk_gate.update_equity(self.order_executor.equity)
         ctx.clear_open_trade()
@@ -575,6 +589,10 @@ class SpiritOrchestrator:
         """Common exit logic for a specific pair."""
         tsm = self.trade_state_manager.get(pair)
         ctx = self.context_manager.get(pair)
+        strategy = self.strategies.get(pair)
+
+        # Capture entry price before sell clears open_trade
+        entry_price = float(getattr(tsm.open_trade, 'entry_price', 0) or 0)
 
         # Copy entry context to exit record
         for attr in _ENTRY_COPY_ATTRS:
@@ -583,6 +601,16 @@ class SpiritOrchestrator:
             "sell", trade_record, self.mode, tsm,
             order_executor=self.order_executor, logger=self._cb_logger,
         )
+
+        # Notify strategy of exit (for cooldown tracking, state cleanup)
+        exit_price = float(getattr(trade_record, 'exit_price', 0) or 0)
+        exit_reason = getattr(trade_record, 'exit_reason', '') or ''
+        if strategy and hasattr(strategy, 'on_exit_completed'):
+            try:
+                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price)
+            except Exception as e:
+                self._cb_logger.debug(f"[{pair}] on_exit_completed error: {e}")
+
         # Sync paper equity into RiskGate after trade closes
         if self.risk_gate and self.mode in ('paper', 'live') and self.order_executor is not None:
             self.risk_gate.update_equity(self.order_executor.equity)
