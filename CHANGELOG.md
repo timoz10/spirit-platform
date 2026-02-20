@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **D-Limit introduction blog post** (2026-02-20): Comprehensive overview of D-Limit technical indicator
+  - docs/blog_posts/D-Limit_first_Post - Original draft (25 lines)
+  - docs/blog_posts/D-Limit_first_Post_EDITED.md - Enhanced version (164 lines)
+  - Full pipeline documentation covering all 10 modules
+  - Module map with development status
+  - Unidirectional data flow architecture explained
+  - Status: Draft ready for Ghost CMS publication
+- **PostgreSQL replay data source** (2026-02-20): Batch backfill infrastructure for D-Limit
+  - src/spirit/utils/replay_data_source.py - PG-based replay data source
+  - scripts/dlimit_15m_backfill_all.sh - 15m interval batch backfill script
+  - Purpose: Historical D-Limit indicator backfilling from PostgreSQL OHLC data
 - **Daily close-up documentation** (2025-12-12): End of day summary for infrastructure and security work
   - docs/daily/2025-12-12.md (daily log with detailed activity summary)
   - docs/daily/2025-12-12-RECAP.md (comprehensive recap of infrastructure cleanup)
