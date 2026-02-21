@@ -196,12 +196,14 @@ def _check_ohlc_freshness() -> CheckResult:
         )
 
 
-def _check_env_vars() -> CheckResult:
+def _check_env_vars(skip_kraken: bool = False) -> CheckResult:
     """Verify required environment variables / config values are set."""
     from spirit.utils.config_loader import get_config
 
     # Secrets: must come from env vars (not YAML)
-    secrets = ['POSTGRES_PASSWORD', 'KRAKEN_API_KEY']
+    secrets = ['POSTGRES_PASSWORD']
+    if not skip_kraken:
+        secrets.append('KRAKEN_API_KEY')
     missing = [v for v in secrets if not os.environ.get(v)]
     # Also check _FILE variants for Kraken keys (Docker secret pattern)
     if 'KRAKEN_API_KEY' in missing and os.environ.get('KRAKEN_API_KEY_FILE'):
@@ -306,22 +308,27 @@ def _check_profiler_data() -> CheckResult:
         )
 
 
-def run_preflight() -> PreflightResult:
+def run_preflight(skip_kraken: bool = False) -> PreflightResult:
     """
     Run all pre-flight checks. Returns PreflightResult.
 
     FATAL failures mean Spirit should not start.
     WARN failures are logged but do not block startup.
+
+    skip_kraken: If True, skip Kraken key check (e.g. replay mode).
     """
     checks = [
-        _check_env_vars(),
+        _check_env_vars(skip_kraken=skip_kraken),
         _check_pg_connectivity(),
         _check_pg_tables(),
-        _check_kraken_keys(),
+    ]
+    if not skip_kraken:
+        checks.append(_check_kraken_keys())
+    checks.extend([
         _check_ohlc_freshness(),
         _check_profiler_data(),
         _check_disk_space(),
-    ]
+    ])
 
     fatal_failed = any(not c.passed and c.severity == 'FATAL' for c in checks)
 

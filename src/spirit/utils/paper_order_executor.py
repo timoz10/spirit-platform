@@ -37,21 +37,24 @@ class PaperOrderExecutor:
         max_trade_usd: float = 250.0,
         fee_pct: float = 0.40,
         pair: Optional[str] = None,
-        volume_step: float = 0.0001,
+        pair_info: Optional[Dict] = None,
+        replay_mode: bool = False,
     ):
         from spirit.config import KRAKEN_PAIR
 
         self.pair = pair or KRAKEN_PAIR
-        self.volume_step = float(volume_step)
+        self._pair_info = pair_info or {}
         self.cash = float(starting_equity)
         self._open_positions: Dict[str, _OpenPosition] = {}  # order_id → position
         self._last_prices: Dict[str, float] = {}  # pair → last known bid price
         self.max_trade_usd = float(max_trade_usd)
         self.fee_pct = float(fee_pct)
         self._seq = 0
+        self.replay_mode = replay_mode
 
+        mode_label = "REPLAY" if replay_mode else "PAPER"
         logger.info(
-            f"[PAPER] Initialized: equity=${self.equity:.2f} "
+            f"[PAPER] Initialized ({mode_label}): equity=${self.equity:.2f} "
             f"max_trade=${self.max_trade_usd:.0f} fee={self.fee_pct:.2f}%"
         )
 
@@ -81,8 +84,10 @@ class PaperOrderExecutor:
             position_value += p.volume * market_price
         self.cash = float(value) - position_value
 
-    def _round_volume(self, volume: float) -> float:
-        step = self.volume_step
+    def _round_volume(self, volume: float, pair: str = None) -> float:
+        p = pair or self.pair
+        decimals = self._pair_info.get(p, {}).get('lot_decimals', 8)
+        step = 10 ** (-decimals)
         steps = int(volume / step)
         rounded = max(step, steps * step)
         return float(f"{rounded:.10f}")
@@ -114,8 +119,9 @@ class PaperOrderExecutor:
         """
         pair = getattr(trade_record, 'symbol', None) or self.pair
 
-        # Get real ask price for validation
-        ticker = self._get_ticker(pair)
+        # Get real ask price for validation (skip in replay mode)
+        if not self.replay_mode:
+            ticker = self._get_ticker(pair)
 
         # Determine USD size (capped)
         buy_usd = getattr(trade_record, 'buy_amount', None)
@@ -133,14 +139,16 @@ class PaperOrderExecutor:
             logger.warning("[PAPER] Insufficient cash for limit order")
             return {}
 
-        volume = self._round_volume(buy_usd / limit_price)
+        volume = self._round_volume(buy_usd / limit_price, pair)
+        actual_notional = volume * limit_price
 
-        # Validate with Kraken
-        try:
-            self._validate_order('buy', volume, pair)
-        except Exception as e:
-            logger.error(f"[PAPER] Limit order validation failed: {e}")
-            return {}
+        # Validate with Kraken (skip in replay mode)
+        if not self.replay_mode:
+            try:
+                self._validate_order('buy', volume, pair)
+            except Exception as e:
+                logger.error(f"[PAPER] Limit order validation failed: {e}")
+                return {}
 
         order_id = self._next_order_id()
         trade_record.order_id = order_id
@@ -155,13 +163,13 @@ class PaperOrderExecutor:
             'pair': pair,
             'limit_price': limit_price,
             'volume': volume,
-            'buy_usd': buy_usd,
+            'notional': actual_notional,
             'placed_at': time.time(),
         }
 
         logger.info(
             f"[PAPER LIMIT BUY] txid={order_id} limit={limit_price:.2f} "
-            f"vol={volume:.6f} notional=${buy_usd:.2f} "
+            f"vol={volume:.6f} notional=${actual_notional:.2f} "
             f"cash=${self.cash:.2f}"
         )
         return {'txid': [order_id], 'descr': {'order': f'paper limit buy {volume} {pair} @ {limit_price}'}}
@@ -184,12 +192,13 @@ class PaperOrderExecutor:
         limit_price = pending['limit_price']
 
         if low <= limit_price:
+            actual_notional = pending['notional']
             return {
                 'status': 'closed',
                 'fill_price': limit_price,
                 'fill_volume': pending['volume'],
-                'fill_fee': pending['buy_usd'] * (self.fee_pct / 100.0) / 2.0,
-                'fill_cost': pending['buy_usd'],
+                'fill_fee': actual_notional * (self.fee_pct / 100.0) / 2.0,
+                'fill_cost': actual_notional,
             }
 
         return {'status': 'open', 'fill_price': None, 'fill_volume': None,
@@ -221,16 +230,16 @@ class PaperOrderExecutor:
         pair = pending['pair']
         limit_price = pending['limit_price']
         volume = pending['volume']
-        buy_usd = pending['buy_usd']
-        entry_fee_usd = buy_usd * (self.fee_pct / 100.0) / 2.0
+        actual_notional = pending['notional']
+        entry_fee_usd = actual_notional * (self.fee_pct / 100.0) / 2.0
 
-        # Deduct cash and track position
-        self.cash -= (buy_usd + entry_fee_usd)
+        # Deduct actual cost (rounded volume * price) from cash
+        self.cash -= (actual_notional + entry_fee_usd)
         self._open_positions[txid] = _OpenPosition(
             pair=pair,
             volume=volume,
             entry_price=limit_price,
-            notional_usd=buy_usd,
+            notional_usd=actual_notional,
             order_id=txid,
         )
 
@@ -245,7 +254,7 @@ class PaperOrderExecutor:
 
         logger.info(
             f"[PAPER LIMIT FILL] fill={limit_price:.2f} vol={volume:.6f} "
-            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} "
+            f"notional=${actual_notional:.2f} fee=${entry_fee_usd:.2f} "
             f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
         )
 
@@ -255,13 +264,22 @@ class PaperOrderExecutor:
 
         Caps buy_amount at max_trade_usd, deducts entry fee, updates equity.
         Sets trade_record fields: entry_price, buy_amount, order_id, mode, fee.
+
+        In replay_mode: uses trade_record.entry_price as fill (no API calls).
         """
         # Extract pair from trade_record (multi-pair support)
         pair = getattr(trade_record, 'symbol', None) or self.pair
 
-        # Get real ask price first (needed for USD/BTC detection)
-        ticker = self._get_ticker(pair)
-        ask_price = ticker['ask']
+        if self.replay_mode:
+            # Replay: use strategy's signal price as fill (no API needed)
+            ask_price = float(getattr(trade_record, 'entry_price', 0))
+            if ask_price <= 0:
+                logger.error("[PAPER] Replay: trade_record.entry_price is missing or zero")
+                return {}
+        else:
+            # Live/paper: get real ask price from Kraken
+            ticker = self._get_ticker(pair)
+            ask_price = ticker['ask']
 
         # Determine USD size (capped)
         buy_usd = getattr(trade_record, 'buy_amount', None)
@@ -280,34 +298,36 @@ class PaperOrderExecutor:
             logger.warning("[PAPER] Insufficient cash for trade")
             return {}
 
-        # Compute volume in base asset
-        volume = self._round_volume(buy_usd / ask_price)
+        # Compute volume in base asset (rounded to exchange lot size)
+        volume = self._round_volume(buy_usd / ask_price, pair)
+        actual_notional = volume * ask_price  # actual cost after rounding
 
-        # Validate with Kraken
-        try:
-            self._validate_order('buy', volume, pair)
-        except Exception as e:
-            logger.error(f"[PAPER] Order validation failed: {e}")
-            return {}
+        # Validate with Kraken (skip in replay mode)
+        if not self.replay_mode:
+            try:
+                self._validate_order('buy', volume, pair)
+            except Exception as e:
+                logger.error(f"[PAPER] Order validation failed: {e}")
+                return {}
 
-        # Compute fee (half of round-trip at entry)
-        entry_fee_usd = buy_usd * (self.fee_pct / 100.0) / 2.0
+        # Compute fee on actual notional (half of round-trip at entry)
+        entry_fee_usd = actual_notional * (self.fee_pct / 100.0) / 2.0
 
-        # Update cash and track position
-        self.cash -= (buy_usd + entry_fee_usd)
+        # Deduct actual cost (rounded volume * price) from cash
+        self.cash -= (actual_notional + entry_fee_usd)
         order_id = self._next_order_id()
         self._open_positions[order_id] = _OpenPosition(
             pair=pair,
             volume=volume,
             entry_price=ask_price,
-            notional_usd=buy_usd,
+            notional_usd=actual_notional,
             order_id=order_id,
         )
 
         # Update trade_record — preserve signal price before overwriting with fill
         trade_record.signal_entry_price = trade_record.entry_price  # strategy's intended price
         trade_record.entry_price = ask_price                         # actual fill price
-        trade_record.slippage = ask_price - (trade_record.signal_entry_price or ask_price)
+        trade_record.slippage = 0.0 if self.replay_mode else (ask_price - (trade_record.signal_entry_price or ask_price))
         trade_record.buy_amount = volume
         trade_record.order_id = order_id
         trade_record.mode = 'paper'
@@ -317,11 +337,11 @@ class PaperOrderExecutor:
         logger.info(
             f"[PAPER BUY] signal={sig:.2f} fill={ask_price:.2f} "
             f"slip={trade_record.slippage:+.2f} vol={volume:.6f} "
-            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} "
+            f"notional=${actual_notional:.2f} fee=${entry_fee_usd:.2f} "
             f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
             if sig is not None else
             f"[PAPER BUY] fill={ask_price:.2f} vol={volume:.6f} "
-            f"notional=${buy_usd:.2f} fee=${entry_fee_usd:.2f} "
+            f"notional=${actual_notional:.2f} fee=${entry_fee_usd:.2f} "
             f"cash=${self.cash:.2f} equity=${self.equity:.2f}"
         )
         return {'txid': [order_id], 'descr': {'order': f'paper buy {volume} {pair} @ market'}}
@@ -332,6 +352,8 @@ class PaperOrderExecutor:
 
         Deducts exit fee, updates equity, writes to PG strategy_performance.
         Sets trade_record fields: exit_price, order_id, fee (total round-trip).
+
+        In replay_mode: uses trade_record.exit_price as fill (no API calls).
         """
         # Extract pair from open_trade (multi-pair support)
         pair = getattr(open_trade, 'symbol', None) or self.pair
@@ -341,18 +363,27 @@ class PaperOrderExecutor:
             logger.error("[PAPER] Cannot close trade: missing buy_amount")
             return {}
 
-        volume = self._round_volume(float(buy_amount))
+        volume = self._round_volume(float(buy_amount), pair)
 
-        # Get real bid price
-        ticker = self._get_ticker(pair)
-        bid_price = ticker['bid']
+        if self.replay_mode:
+            # Replay: use strategy's exit price as fill (no API needed)
+            bid_price = float(getattr(trade_record, 'exit_price', 0))
+            if bid_price <= 0:
+                logger.error("[PAPER] Replay: trade_record.exit_price is missing or zero")
+                return {}
+            self._last_prices[pair] = bid_price
+        else:
+            # Live/paper: get real bid price from Kraken
+            ticker = self._get_ticker(pair)
+            bid_price = ticker['bid']
 
-        # Validate with Kraken
-        try:
-            self._validate_order('sell', volume, pair)
-        except Exception as e:
-            logger.error(f"[PAPER] Sell validation failed: {e}")
-            return {}
+        # Validate with Kraken (skip in replay mode)
+        if not self.replay_mode:
+            try:
+                self._validate_order('sell', volume, pair)
+            except Exception as e:
+                logger.error(f"[PAPER] Sell validation failed: {e}")
+                return {}
 
         # Compute PnL and fees
         entry_price = getattr(open_trade, 'entry_price', None) or 0.0
@@ -405,12 +436,17 @@ class PaperOrderExecutor:
             notional_at_entry = buy_amount * entry_price
             pnl_pct = (pnl / notional_at_entry * 100.0) if notional_at_entry else 0.0
 
-            now = datetime.now(timezone.utc)
             entry_ts = getattr(open_trade, 'entry_datetime', None)
+            # In replay mode, use exit datetime from trade record; live uses NOW()
+            exit_dt = getattr(trade_record, 'exit_datetime', None)
+            now = exit_dt if (self.replay_mode and exit_dt) else datetime.now(timezone.utc)
             pair = getattr(open_trade, 'symbol', None) or self.pair
             strategy = getattr(open_trade, 'strategy_name', None) or 'zone_bounce'
             regime = getattr(open_trade, 'trend_direction_entry', None)
             exit_reason = getattr(trade_record, 'exit_reason', None)
+
+            order_type = getattr(open_trade, 'order_type', None) or 'market'
+            limit_px = getattr(open_trade, 'limit_price', None)
 
             record_trade(
                 timestamp=now,
@@ -423,7 +459,9 @@ class PaperOrderExecutor:
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 regime_at_entry=regime,
-                source='paper',
+                source='replay' if self.replay_mode else 'paper',
+                order_type=order_type,
+                limit_price=float(limit_px) if limit_px else None,
             )
             logger.info(f"[PAPER] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
         except Exception as e:

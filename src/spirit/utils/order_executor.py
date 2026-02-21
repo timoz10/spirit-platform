@@ -22,7 +22,7 @@ class KrakenOrderExecutor:
     def __init__(
         self,
         pair: Optional[str] = None,
-        volume_step: float = 0.0001,
+        pair_info: Optional[dict] = None,
         starting_equity: float = 10000.0,
         fill_poll_interval: float = 2.0,
         fill_poll_timeout: float = 30.0,
@@ -30,20 +30,23 @@ class KrakenOrderExecutor:
         from spirit.config import KRAKEN_PAIR
 
         self.pair = pair or KRAKEN_PAIR
-        self.volume_step = float(volume_step)
+        self._pair_info = pair_info or {}
         self.equity = float(starting_equity)
         self.fill_poll_interval = fill_poll_interval
         self.fill_poll_timeout = fill_poll_timeout
         self._entry_txid: Optional[str] = None
 
         logger.info(
-            f"[LIVE] Initialized: equity=${self.equity:.2f} pair={self.pair}"
+            f"[LIVE] Initialized: equity=${self.equity:.2f} pair={self.pair} "
+            f"pairs_configured={len(self._pair_info)}"
         )
 
-    def _round_volume(self, volume: float) -> float:
-        step = self.volume_step
+    def _round_volume(self, volume: float, pair: str = None) -> float:
         if volume is None:
             return None
+        p = pair or self.pair
+        decimals = self._pair_info.get(p, {}).get('lot_decimals', 8)
+        step = 10 ** (-decimals)
         steps = int(volume / step)
         rounded = max(step, steps * step)
         return float(f"{rounded:.10f}")
@@ -156,16 +159,21 @@ class KrakenOrderExecutor:
                 fill_price, fill_volume, fill_cost, fill_fee, fill_fee_pct,
                 order_status, submitted_at, kraken_opened_at, kraken_closed_at,
                 fill_latency_ms, mid_price, signal_price, slippage, slippage_pct,
-                strategy_name, trade_side, linked_txid, mode
+                strategy_name, trade_side, linked_txid, mode, limit_price
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
-                %s, %s, %s, 'live'
+                %s, %s, %s, 'live', %s
             )
             ON CONFLICT (txid) DO NOTHING
             """
+            # Extract limit_price if this was a limit order
+            lo_limit_price = None
+            if ordertype == 'limit' and signal_price:
+                lo_limit_price = signal_price
+
             execute_query(
                 query,
                 (
@@ -173,7 +181,7 @@ class KrakenOrderExecutor:
                     fill_price, fill_volume, fill_cost, fill_fee, fill_fee_pct,
                     order_status, submitted_at, kraken_opened_at, kraken_closed_at,
                     fill_latency_ms, mid_price, signal_price, slippage, slippage_pct,
-                    strategy_name, trade_side, linked_txid,
+                    strategy_name, trade_side, linked_txid, lo_limit_price,
                 ),
                 fetch='none',
             )
@@ -199,6 +207,9 @@ class KrakenOrderExecutor:
             regime = getattr(open_trade, 'trend_direction_entry', None)
             exit_reason = getattr(trade_record, 'exit_reason', None)
 
+            order_type = getattr(open_trade, 'order_type', None) or 'market'
+            limit_px = getattr(open_trade, 'limit_price', None)
+
             record_trade(
                 timestamp=now,
                 entry_timestamp=entry_ts,
@@ -211,6 +222,8 @@ class KrakenOrderExecutor:
                 exit_reason=exit_reason,
                 regime_at_entry=regime,
                 source='live',
+                order_type=order_type,
+                limit_price=float(limit_px) if limit_px else None,
             )
             logger.info(f"[LIVE] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
         except Exception as e:

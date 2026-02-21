@@ -360,10 +360,11 @@ class SpiritOrchestrator:
         # Notify strategy of exit
         exit_price = float(getattr(trade_record, 'exit_price', 0) or 0)
         exit_reason = getattr(trade_record, 'exit_reason', '') or ''
+        exit_dt = getattr(trade_record, 'exit_datetime', None)
         strategy = self.strategies.get(pair)
         if strategy and hasattr(strategy, 'on_exit_completed'):
             try:
-                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price)
+                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price, exit_dt=exit_dt)
             except Exception as e:
                 self._cb_logger.debug(f"[{pair}:{strategy_name}] on_exit_completed error: {e}")
 
@@ -605,9 +606,10 @@ class SpiritOrchestrator:
         # Notify strategy of exit (for cooldown tracking, state cleanup)
         exit_price = float(getattr(trade_record, 'exit_price', 0) or 0)
         exit_reason = getattr(trade_record, 'exit_reason', '') or ''
+        exit_dt = getattr(trade_record, 'exit_datetime', None)
         if strategy and hasattr(strategy, 'on_exit_completed'):
             try:
-                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price)
+                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price, exit_dt=exit_dt)
             except Exception as e:
                 self._cb_logger.debug(f"[{pair}] on_exit_completed error: {e}")
 
@@ -790,15 +792,35 @@ def main():
     logger = get_logger("spirit_main")
     logger.info("---------- SPIRIT starting ----------")
 
-    # Pre-flight validation
+    # Pre-flight validation (skip Kraken keys for replay mode — no API needed)
+    import sys
+    is_replay_mode = '--replay' in sys.argv
     from spirit.utils.preflight import run_preflight
-    preflight = run_preflight()
+    preflight = run_preflight(skip_kraken=is_replay_mode)
     if not preflight.passed:
         logger.error("Pre-flight checks FAILED. Spirit cannot start.")
         for f in preflight.fatal_failures:
             logger.error(f"  {f.name}: {f.message}")
         raise SystemExit(1)
     logger.info("Pre-flight checks passed.")
+
+    # Log version and active configuration for prod traceability (#25)
+    import subprocess
+    try:
+        git_hash = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        git_hash = 'unknown'
+    strategy_name = get_config('SPIRIT_STRATEGY', 'none')
+    pairs_cfg = get_config('SPIRIT_PAIRS', '')
+    mode_label = 'replay' if '--replay' in sys.argv else get_config('SPIRIT_MODE', 'paper')
+    logger.info(
+        f"Spirit v={git_hash} strategy={strategy_name} "
+        f"pairs={pairs_cfg or 'default'} mode={mode_label}"
+    )
 
     # Start web dashboard if enabled
     if get_config('SPIRIT_WEB', '').lower() in ('1', 'true', 'yes'):
@@ -818,7 +840,22 @@ def main():
     parser.add_argument('--duration', type=int, default=None)
     parser.add_argument('--no-pause', action='store_true')
     parser.add_argument('--exit-after-warmup', action='store_true')
+    parser.add_argument('--replay', action='store_true', help='PG replay backtest mode')
+    parser.add_argument('--start', type=str, default=None, help='Replay start date (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, default=None, help='Replay end date (YYYY-MM-DD)')
+    parser.add_argument('--with-monitoring', action='store_true',
+                        help='Include monitoring intervals (1m) in replay for dynamic exit')
     args = parser.parse_args()
+
+    # --replay implies --csv-style flow (non-live) with paper mode
+    if args.replay:
+        if not args.start or not args.end:
+            parser.error("--replay requires --start and --end dates")
+        args.data_source = 'replay'
+        if args.mode == 'test':
+            args.mode = 'paper'
+        # Expose replay start for PIT-safe calibration in scorer/regime engine
+        os.environ['SPIRIT_REPLAY_START'] = args.start
 
     # ---------------------------------------------------------------
     # Determine pairs and create per-pair strategy instances
@@ -933,19 +970,35 @@ def main():
         trade_state_manager = MultiPairTradeStateManager()
 
     # Order executor (shared — one account across all pairs)
+    # Fetch per-pair lot sizes: live from Kraken API, paper/replay from defaults
+    pair_info = None
     order_executor = None
     try:
         if trading_enabled and args.mode == 'live':
+            from spirit.utils.kraken_api_client import get_asset_pairs, KRAKEN_PAIR_DEFAULTS
+            try:
+                pair_info = get_asset_pairs()
+                logger.info(f"[MAIN] Fetched lot sizes from Kraken for {len(pair_info)} pairs")
+            except Exception as e:
+                logger.warning(f"[MAIN] Failed to fetch Kraken pair info, using defaults: {e}")
+                pair_info = dict(KRAKEN_PAIR_DEFAULTS)
+
             from spirit.utils.order_executor import KrakenOrderExecutor
             order_executor = KrakenOrderExecutor(
                 starting_equity=float(os.getenv('ACCOUNT_EQUITY', '10000')),
+                pair_info=pair_info,
             )
         elif trading_enabled and args.mode == 'paper':
+            from spirit.utils.kraken_api_client import KRAKEN_PAIR_DEFAULTS
+            pair_info = dict(KRAKEN_PAIR_DEFAULTS)
+
             from spirit.utils.paper_order_executor import PaperOrderExecutor
             order_executor = PaperOrderExecutor(
                 starting_equity=float(get_config('PAPER_STARTING_EQUITY', '1000')),
                 max_trade_usd=float(get_config('PAPER_MAX_TRADE_USD', '250')),
                 fee_pct=float(get_config('PAPER_FEE_PCT', '0.40')),
+                pair_info=pair_info,
+                replay_mode=(args.data_source == 'replay'),
             )
     except (ImportError, ValueError, OSError) as e:
         logger.exception(f"Order executor init failed: {e}")
@@ -971,26 +1024,32 @@ def main():
         except (ImportError, ValueError, OSError) as e:
             logger.debug(f"RiskGate init skipped: {e}")
 
-    # Crash recovery: sync restored state per pair
-    for pair in pairs:
-        ctx = context_manager.get(pair)
-        if isinstance(trade_state_manager, MultiStrategyTradeStateManager):
-            # Multi-strategy: restore into the appropriate (pair, strategy) slot
-            if ctx.open_trade is not None:
-                strat_name = getattr(ctx.open_trade, 'strategy_name', '') or ''
-                tsm = trade_state_manager.get(pair, strat_name)
-                tsm.open_trade = ctx.open_trade
-                logger.info(f"[{pair}:{strat_name}] Restored open trade into MultiStrategyTSM")
-        else:
-            tsm = trade_state_manager.get(pair)
-            if ctx.open_trade is not None:
-                tsm.open_trade = ctx.open_trade
-                logger.info(f"[{pair}] Restored open trade into TradeStateManager")
-        if ctx.equity > 0 and order_executor and hasattr(order_executor, 'equity'):
-            order_executor.equity = ctx.equity
-            logger.info(f"[{pair}] Restored equity: ${ctx.equity:.2f}")
-            if risk_gate:
-                risk_gate.update_equity(ctx.equity)
+    # Crash recovery: sync restored state per pair (skip in replay mode — clean slate)
+    if args.data_source == 'replay':
+        logger.info("[REPLAY] Skipping state restoration — starting with clean slate")
+        for pair in pairs:
+            ctx = context_manager.get(pair)
+            ctx.clear_open_trade()
+    else:
+        for pair in pairs:
+            ctx = context_manager.get(pair)
+            if isinstance(trade_state_manager, MultiStrategyTradeStateManager):
+                # Multi-strategy: restore into the appropriate (pair, strategy) slot
+                if ctx.open_trade is not None:
+                    strat_name = getattr(ctx.open_trade, 'strategy_name', '') or ''
+                    tsm = trade_state_manager.get(pair, strat_name)
+                    tsm.open_trade = ctx.open_trade
+                    logger.info(f"[{pair}:{strat_name}] Restored open trade into MultiStrategyTSM")
+            else:
+                tsm = trade_state_manager.get(pair)
+                if ctx.open_trade is not None:
+                    tsm.open_trade = ctx.open_trade
+                    logger.info(f"[{pair}] Restored open trade into TradeStateManager")
+            if ctx.equity > 0 and order_executor and hasattr(order_executor, 'equity'):
+                order_executor.equity = ctx.equity
+                logger.info(f"[{pair}] Restored equity: ${ctx.equity:.2f}")
+                if risk_gate:
+                    risk_gate.update_equity(ctx.equity)
 
     # Startup reconciliation: cancel orphaned limit orders from previous session
     if trading_enabled and args.mode == 'live' and order_executor is not None:
@@ -1062,7 +1121,26 @@ def main():
 
     multi_pair = len(pairs) > 1
 
-    if args.data_source == 'kraken':
+    if args.data_source == 'replay':
+        from spirit.utils.replay_data_source import ReplayDataSource
+        if getattr(args, 'with_monitoring', False) and monitoring_intervals:
+            replay_intervals = sorted({interval} | monitoring_intervals)
+        else:
+            replay_intervals = [interval]
+        logger.info(
+            f"[PG Replay] pairs={pairs} intervals={replay_intervals} "
+            f"primary={interval} range={args.start} to {args.end}"
+        )
+        data_source = ReplayDataSource(
+            pairs=pairs,
+            primary_interval=interval,
+            start_date=args.start,
+            end_date=args.end,
+            intervals=replay_intervals,
+            window_size=args.buffer_size,
+        )
+        multi_pair = True  # ReplayDataSource is always multi-pair style
+    elif args.data_source == 'kraken':
         if multi_pair:
             from spirit.utils.multi_pair_data_source import MultiPairLiveDataSource
             logger.info(f"[MultiPair Live] pairs={pairs} intervals={intervals_list} primary={interval}")
@@ -1222,7 +1300,7 @@ def main():
     # Register callbacks
     # ---------------------------------------------------------------
 
-    is_csv = (args.data_source == 'csv')
+    is_csv = (args.data_source in ('csv', 'replay'))
     if multi_pair:
         # Multi-pair data source emits (pair, interval, window)
         data_source.register_callback(
@@ -1238,11 +1316,12 @@ def main():
         data_source.register_callback(orch.on_new_candle)
 
     # ---------------------------------------------------------------
-    # CSV replay
+    # CSV / PG replay loop
     # ---------------------------------------------------------------
 
     if is_csv:
         import threading
+        replay_label = "PG Replay" if args.data_source == 'replay' else "CSV Replay"
 
         def _csv_replay_loop():
             try:
@@ -1250,19 +1329,20 @@ def main():
                 for _ in iter(data_source):
                     steps += 1
                     if steps % 1000 == 0:
-                        logger.info(f"[CSV Replay] progress steps={steps}")
+                        logger.info(f"[{replay_label}] progress steps={steps}")
             except Exception as e:
-                logger.error(f"[CSV Replay] error: {e}")
+                import traceback
+                logger.error(f"[{replay_label}] error: {e}\n{traceback.format_exc()}")
 
-        csv_thread = threading.Thread(target=_csv_replay_loop, name="CsvReplayThread", daemon=True)
+        csv_thread = threading.Thread(target=_csv_replay_loop, name="ReplayThread", daemon=True)
         orch.csv_thread = csv_thread
         csv_thread.start()
-        logger.info("[MAIN] Waiting for CSV replay to finish...")
+        logger.info(f"[MAIN] Waiting for {replay_label} to finish...")
         try:
             csv_thread.join()
         except Exception:
             pass
-        logger.info("[MAIN] CSV replay finished; initiating graceful shutdown...")
+        logger.info(f"[MAIN] {replay_label} finished; initiating graceful shutdown...")
         orch.graceful_shutdown(no_pause=args.no_pause, is_csv=True)
         return
 
