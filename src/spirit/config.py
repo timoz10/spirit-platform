@@ -53,6 +53,11 @@ LIMIT_ORDER_MODE = get_config('LIMIT_ORDER_MODE', 'market')
 LIMIT_ORDER_TTL_MINUTES = int(get_config('LIMIT_ORDER_TTL_MINUTES', '60'))
 LIMIT_ORDER_OFFSET_PCT = float(get_config('LIMIT_ORDER_OFFSET_PCT', '0.0'))
 
+# --- Risk Gate Calibration ---
+RISK_GATE_CALIBRATION_ENABLED = get_config('RISK_GATE_CALIBRATION_ENABLED', 'false').lower() == 'true'
+RISK_GATE_RECALIBRATE_HOURS = int(get_config('RISK_GATE_RECALIBRATE_HOURS', '24'))
+RISK_GATE_FEEDBACK_WINDOW = int(get_config('RISK_GATE_FEEDBACK_WINDOW', '50'))
+
 # --- Strategy selection ---
 # Set SPIRIT_STRATEGY env var to load a trading algorithm.
 # If not set, Spirit starts in monitor-only mode (no trades).
