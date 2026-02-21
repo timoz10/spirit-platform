@@ -43,7 +43,7 @@ class KrakenOHLCBuffer:
                         else:
                             next_grid = next_grid.replace(minute=minute)
                         delay = max(0.0, (next_grid - now).total_seconds())
-                        logger.info(f"[TimeSync][int={interval_min}] Sleeping {delay:.2f}s until {next_grid} UTC, then {self.buffer_delay_seconds}s buffer delay.")
+                        logger.debug(f"[TimeSync][int={interval_min}] Sleeping {delay:.2f}s until {next_grid} UTC, then {self.buffer_delay_seconds}s buffer delay.")
                         time.sleep(delay)
                         time.sleep(self.buffer_delay_seconds)
                     # Fetch and update after alignment
