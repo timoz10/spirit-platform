@@ -49,7 +49,7 @@ class OHLCRecord:
             low=float(low),
             close=float(close),
             vwap=float(vwap) if vwap is not None else 0.0,
-            volume=float(volume),
+            volume=float(volume) if volume is not None else 0.0,
             count=int(count) if count is not None else 0,
             timestamp=int(timestamp) if timestamp is not None else 0
         )

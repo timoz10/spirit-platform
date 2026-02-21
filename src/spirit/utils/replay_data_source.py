@@ -89,9 +89,10 @@ class ReplayDataSource:
         pair_placeholders = ','.join(['%s'] * len(self.pairs))
         interval_placeholders = ','.join(['%s'] * len(self.intervals))
 
-        # Compute warmup lookback: window_size * max_interval minutes
-        max_interval_min = max(self.intervals)
-        warmup_minutes = self.window_size * max_interval_min
+        # Compute warmup lookback based on primary interval only.
+        # With monitoring intervals (e.g. 1m + 60m), using max_interval
+        # would load 720*60=43200 minutes of 1m warmup candles needlessly.
+        warmup_minutes = self.window_size * self.primary_interval
         warmup_start = (
             pd.Timestamp(self.start_date) - timedelta(minutes=warmup_minutes)
         ).strftime('%Y-%m-%d %H:%M:%S')
@@ -132,8 +133,16 @@ class ReplayDataSource:
                     .reset_index(drop=True)
                 )
                 self._data[pair][itvl] = pair_itvl_df
-                # Start pointer after warmup window
-                self._pointers[pair][itvl] = max(self.window_size - 1, 0)
+                # Start pointer: primary interval uses full warmup window,
+                # monitoring intervals skip to first candle at/after start_date
+                if itvl == self.primary_interval:
+                    self._pointers[pair][itvl] = max(self.window_size - 1, 0)
+                else:
+                    if not pair_itvl_df.empty:
+                        idx = pair_itvl_df['datetime'].searchsorted(self._replay_start_ts)
+                        self._pointers[pair][itvl] = max(int(idx) - 1, 0)
+                    else:
+                        self._pointers[pair][itvl] = 0
 
             pair_total = sum(len(self._data[pair][i]) for i in self.intervals)
             logger.info(f"[Replay] {pair}: {pair_total} candles across {len(self.intervals)} intervals")

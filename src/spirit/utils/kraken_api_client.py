@@ -33,6 +33,59 @@ KRAKEN_API_URL = os.environ.get('KRAKEN_API_BASE_URL', 'https://api.kraken.com')
 from spirit.config import KRAKEN_PAIR, KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL
 
 
+# Hardcoded Kraken pair info (fallback when API unavailable, e.g. replay mode)
+# Source: Kraken GET /0/public/AssetPairs, fetched 2026-02-21
+KRAKEN_PAIR_DEFAULTS = {
+    'XBTUSD':  {'ordermin': 0.00005, 'lot_decimals': 8},
+    'ETHUSD':  {'ordermin': 0.001,   'lot_decimals': 8},
+    'SOLUSD':  {'ordermin': 0.02,    'lot_decimals': 8},
+    'ATOMUSD': {'ordermin': 0.5,     'lot_decimals': 8},
+    'INJUSD':  {'ordermin': 0.9,     'lot_decimals': 8},
+    'FETUSD':  {'ordermin': 18,      'lot_decimals': 8},
+    'JUPUSD':  {'ordermin': 20,      'lot_decimals': 5},
+    'GALAUSD': {'ordermin': 650,     'lot_decimals': 8},
+}
+
+# Kraken uses different internal names for some pairs
+_KRAKEN_PAIR_MAP = {
+    'XXBTZUSD': 'XBTUSD',
+    'XETHZUSD': 'ETHUSD',
+}
+
+
+def get_asset_pairs(pairs: list | None = None) -> dict:
+    """Fetch lot sizes and order minimums from Kraken public AssetPairs API.
+
+    Returns dict keyed by our pair names (e.g. XBTUSD) with:
+      - ordermin: float (minimum order volume)
+      - lot_decimals: int (volume decimal places)
+    """
+    url = f"{KRAKEN_API_URL}/0/public/AssetPairs"
+    headers = {
+        'User-Agent': os.environ.get(
+            'KRAKEN_BOT_USER_AGENT', 'kraken-bot/1.0 (+https://example.local)'
+        )
+    }
+    params = {}
+    if pairs:
+        params['pair'] = ','.join(pairs)
+    response = requests.get(url, params=params, headers=headers, timeout=15)
+    response.raise_for_status()
+    result = response.json()
+    if result.get('error'):
+        raise RuntimeError(f"Kraken AssetPairs API error: {result['error']}")
+
+    pair_info = {}
+    for kraken_name, data in result.get('result', {}).items():
+        # Map Kraken's internal name to our name (e.g. XXBTZUSD -> XBTUSD)
+        our_name = _KRAKEN_PAIR_MAP.get(kraken_name, kraken_name)
+        pair_info[our_name] = {
+            'ordermin': float(data.get('ordermin', 0)),
+            'lot_decimals': int(data.get('lot_decimals', 8)),
+        }
+    return pair_info
+
+
 # Helper to sign requests
 def _sign_kraken(path, data, secret, nonce):
     postdata = data.copy()
