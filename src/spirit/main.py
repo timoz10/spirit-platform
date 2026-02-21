@@ -40,6 +40,24 @@ from spirit.trade_logic import (
 )
 from spirit.pending_order_manager import PendingOrderManager, PendingLimitOrder
 
+# Risk gate decision audit trail (lazy init — never blocks startup)
+_risk_gate_writer = None
+
+def _get_risk_gate_writer():
+    """Lazy-load risk_gate_writer to avoid import errors on branches without it.
+
+    Table must be pre-created via the SQL script (same pattern as strategy_performance).
+    """
+    global _risk_gate_writer
+    if _risk_gate_writer is None:
+        try:
+            from spirit.indicators.decision_engine.engine import risk_gate_writer
+            _risk_gate_writer = risk_gate_writer
+        except Exception as e:
+            get_logger("spirit_main").debug(f"risk_gate_writer unavailable: {e}")
+            _risk_gate_writer = False  # sentinel: tried and failed
+    return _risk_gate_writer if _risk_gate_writer is not False else None
+
 
 _ENTRY_COPY_ATTRS = [
     'entry_index', 'entry_datetime', 'entry_price',
@@ -183,6 +201,17 @@ class SpiritOrchestrator:
                     signal = details.get('signal')
                     if signal is not None:
                         risk_decision = self.risk_gate.evaluate(signal)
+                        # Record decision to audit trail
+                        try:
+                            writer = _get_risk_gate_writer()
+                            if writer:
+                                writer.record_decision(
+                                    signal, risk_decision, pair,
+                                    getattr(signal, 'strategy_name', None) or 'zone_bounce',
+                                    source=self.mode,
+                                )
+                        except Exception:
+                            pass
                         if self._web_dec:
                             self._web_dec(risk_decision.to_dict())
                         if not risk_decision.trade:
@@ -284,6 +313,17 @@ class SpiritOrchestrator:
                         if isinstance(self.trade_state_manager, MultiStrategyTradeStateManager):
                             deployed = self.trade_state_manager.total_deployed_usd()
                         risk_decision = self.risk_gate.evaluate(signal, deployed_usd=deployed)
+                        # Record decision to audit trail
+                        try:
+                            writer = _get_risk_gate_writer()
+                            if writer:
+                                writer.record_decision(
+                                    signal, risk_decision, pair,
+                                    strategy_name or 'unknown',
+                                    source=self.mode,
+                                )
+                        except Exception:
+                            pass
                         if self._web_dec:
                             self._web_dec(risk_decision.to_dict())
                         if not risk_decision.trade:
@@ -347,8 +387,9 @@ class SpiritOrchestrator:
             tsm = self.trade_state_manager.get(pair)
         ctx = self.context_manager.get(pair)
 
-        # Capture entry price before sell clears open_trade
+        # Capture entry context before sell clears open_trade
         entry_price = float(getattr(tsm.open_trade, 'entry_price', 0) or 0)
+        entry_datetime = getattr(tsm.open_trade, 'entry_datetime', None)
 
         for attr in _ENTRY_COPY_ATTRS:
             setattr(trade_record, attr, getattr(tsm.open_trade, attr, None))
@@ -367,6 +408,22 @@ class SpiritOrchestrator:
                 strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price, exit_dt=exit_dt)
             except Exception as e:
                 self._cb_logger.debug(f"[{pair}:{strategy_name}] on_exit_completed error: {e}")
+
+        # Record outcome to risk gate audit trail
+        try:
+            writer = _get_risk_gate_writer()
+            if writer and entry_price > 0 and entry_datetime:
+                pnl_pct = (exit_price - entry_price) / entry_price * 100.0
+                writer.update_outcome(
+                    pair=pair,
+                    entry_timestamp=str(entry_datetime),
+                    strategy_name=strategy_name or 'unknown',
+                    is_win=pnl_pct > 0,
+                    pnl_pct=round(pnl_pct, 4),
+                    exit_reason=exit_reason,
+                )
+        except Exception:
+            pass
 
         if self.risk_gate and self.mode in ('paper', 'live') and self.order_executor is not None:
             self.risk_gate.update_equity(self.order_executor.equity)
@@ -546,6 +603,17 @@ class SpiritOrchestrator:
             signal = details.get('signal')
             if signal is not None:
                 risk_decision = self.risk_gate.evaluate(signal)
+                # Record decision to audit trail
+                try:
+                    writer = _get_risk_gate_writer()
+                    if writer:
+                        writer.record_decision(
+                            signal, risk_decision, pair,
+                            getattr(signal, 'strategy_name', None) or 'zone_bounce',
+                            source=self.mode,
+                        )
+                except Exception:
+                    pass
                 if self._web_dec:
                     self._web_dec(risk_decision.to_dict())
                 if not risk_decision.trade:
@@ -592,8 +660,10 @@ class SpiritOrchestrator:
         ctx = self.context_manager.get(pair)
         strategy = self.strategies.get(pair)
 
-        # Capture entry price before sell clears open_trade
+        # Capture entry context before sell clears open_trade
         entry_price = float(getattr(tsm.open_trade, 'entry_price', 0) or 0)
+        entry_datetime = getattr(tsm.open_trade, 'entry_datetime', None)
+        entry_strategy_name = getattr(tsm.open_trade, 'strategy_name', None) or 'zone_bounce'
 
         # Copy entry context to exit record
         for attr in _ENTRY_COPY_ATTRS:
@@ -612,6 +682,22 @@ class SpiritOrchestrator:
                 strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price, exit_dt=exit_dt)
             except Exception as e:
                 self._cb_logger.debug(f"[{pair}] on_exit_completed error: {e}")
+
+        # Record outcome to risk gate audit trail
+        try:
+            writer = _get_risk_gate_writer()
+            if writer and entry_price > 0 and entry_datetime:
+                pnl_pct = (exit_price - entry_price) / entry_price * 100.0
+                writer.update_outcome(
+                    pair=pair,
+                    entry_timestamp=str(entry_datetime),
+                    strategy_name=entry_strategy_name,
+                    is_win=pnl_pct > 0,
+                    pnl_pct=round(pnl_pct, 4),
+                    exit_reason=exit_reason,
+                )
+        except Exception:
+            pass
 
         # Sync paper equity into RiskGate after trade closes
         if self.risk_gate and self.mode in ('paper', 'live') and self.order_executor is not None:
@@ -1343,6 +1429,18 @@ def main():
         except Exception:
             pass
         logger.info(f"[MAIN] {replay_label} finished; initiating graceful shutdown...")
+
+        # Run shadow outcome calculation for blocked decisions (replay only)
+        if args.data_source == 'replay':
+            try:
+                from spirit.indicators.decision_engine.engine.shadow_outcome_calculator import (
+                    calculate_shadow_outcomes,
+                )
+                shadow_count = calculate_shadow_outcomes(limit=5000)
+                logger.info(f"[SHADOW] Post-replay shadow calc: {shadow_count} decisions processed")
+            except Exception as e:
+                logger.debug(f"[SHADOW] Shadow calc skipped: {e}")
+
         orch.graceful_shutdown(no_pause=args.no_pause, is_csv=True)
         return
 
