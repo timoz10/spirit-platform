@@ -106,11 +106,16 @@ class PaperOrderExecutor:
         return ticker
 
     def _validate_order(self, side: str, volume: float, pair: str = None) -> dict:
-        """Call Kraken AddOrder with validate=true to confirm order is valid."""
-        from spirit.utils.kraken_api_client import place_order
-        return place_order(
-            pair or self.pair, side, volume, ordertype='market', validate=True,
+        """Call Kraken AddOrder with validate=true to confirm order is valid.
+
+        Skipped in paper mode (#48) — paper trades should never depend on
+        external API availability. Only used in live mode.
+        """
+        logger.debug(
+            f"[PAPER] Order validation skipped (paper mode): "
+            f"side={side} vol={volume} pair={pair or self.pair}"
         )
+        return {}
 
     def place_limit_order(self, trade_record, limit_price: float) -> dict:
         """
@@ -448,7 +453,7 @@ class PaperOrderExecutor:
             order_type = getattr(open_trade, 'order_type', None) or 'market'
             limit_px = getattr(open_trade, 'limit_price', None)
 
-            record_trade(
+            rowcount = record_trade(
                 timestamp=now,
                 entry_timestamp=entry_ts,
                 pair=pair,
@@ -463,6 +468,12 @@ class PaperOrderExecutor:
                 order_type=order_type,
                 limit_price=float(limit_px) if limit_px else None,
             )
-            logger.info(f"[PAPER] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
+            if rowcount == 0:
+                logger.warning(
+                    f"[PAPER] strategy_performance write returned 0 rows "
+                    f"(possible ON CONFLICT skip): pair={pair} entry_ts={entry_ts}"
+                )
+            else:
+                logger.info(f"[PAPER] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
         except Exception as e:
             logger.error(f"[PAPER] Failed to write to strategy_performance: {e}")
