@@ -76,6 +76,13 @@ class MultiPairLiveDataSource:
         """Register cb(pair: str, interval: int, window: OHLCData)."""
         self._callbacks.append(func)
 
+    def is_monitoring_warm(self, pair: str, interval: int) -> bool:
+        """Return True if the monitoring buffer for (pair, interval) has warmed up."""
+        src = self._sources.get(pair)
+        if src is None:
+            return False
+        return src.is_buffer_warm(int(interval))
+
     def wait_for_data(self, pair: str, interval: int, min_size: int, timeout: int = 180):
         """Block until the buffer for (pair, interval) has min_size candles."""
         if pair not in self._sources:

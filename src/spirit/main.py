@@ -436,6 +436,14 @@ class SpiritOrchestrator:
 
     def _monitor_pair_strategy(self, pair, strategy_name, strategy, interval_val, window_df):
         """Route monitoring ticks to a specific (pair, strategy) slot."""
+        # --- Monitoring warmup gate (#48) ---
+        if self.data_source and hasattr(self.data_source, 'is_monitoring_warm'):
+            if not self.data_source.is_monitoring_warm(pair, interval_val):
+                self._cb_logger.debug(
+                    f"[{pair}:{strategy_name}][MONITORING] Skipping — {interval_val}m buffer not warm"
+                )
+                return
+
         if isinstance(self.trade_state_manager, MultiStrategyTradeStateManager):
             tsm = self.trade_state_manager.get(pair, strategy_name)
         else:
@@ -471,6 +479,35 @@ class SpiritOrchestrator:
         2. Pending limit  -> _check_pending_limit() (check fill/expiry)
         3. No trade       -> entry scan -> _process_entry() (may place limit)
         """
+        # --- Monitoring warmup gate (#48) ---
+        # Skip monitoring until the buffer for this interval has warmed up
+        # (200+ candles), preventing stale/partial prices from triggering
+        # bogus ATR stops on the first cycle after restart.
+        if self.data_source and hasattr(self.data_source, 'is_monitoring_warm'):
+            if not self.data_source.is_monitoring_warm(pair, interval_val):
+                if not getattr(self, '_warmup_warned', None):
+                    self._warmup_warned = set()
+                key = (pair, int(interval_val))
+                if key not in self._warmup_warned:
+                    self._cb_logger.warning(
+                        f"[{pair}][MONITORING] Skipping — {interval_val}m buffer not warm yet"
+                    )
+                    self._warmup_warned.add(key)
+                else:
+                    self._cb_logger.debug(
+                        f"[{pair}][MONITORING] Still waiting for {interval_val}m buffer warmup"
+                    )
+                return
+        else:
+            # Log once when warmup gate clears for this (pair, interval)
+            if getattr(self, '_warmup_warned', None):
+                key = (pair, int(interval_val))
+                if key in self._warmup_warned:
+                    self._cb_logger.info(
+                        f"[{pair}][MONITORING] {interval_val}m buffer warm — monitoring active"
+                    )
+                    self._warmup_warned.discard(key)
+
         tsm = self.trade_state_manager.get(pair)
         strategy = self.strategies.get(pair)
         if not strategy:
