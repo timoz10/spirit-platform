@@ -58,6 +58,14 @@ class MultiIntervalLiveDataSource:
             buf.start_background_updater()
             self.buffers[int(itvl)] = buf
 
+    def is_buffer_warm(self, interval: int) -> bool:
+        """Return True if the buffer for *interval* has completed warmup (200+ candles)."""
+        interval = int(interval)
+        buf = self.buffers.get(interval)
+        if buf is None:
+            return False
+        return getattr(buf, '_is_warm', False)
+
     def register_callback(self, func):
         self._callbacks.append(func)
 

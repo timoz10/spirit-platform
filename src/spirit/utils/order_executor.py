@@ -210,7 +210,7 @@ class KrakenOrderExecutor:
             order_type = getattr(open_trade, 'order_type', None) or 'market'
             limit_px = getattr(open_trade, 'limit_price', None)
 
-            record_trade(
+            rowcount = record_trade(
                 timestamp=now,
                 entry_timestamp=entry_ts,
                 pair=pair,
@@ -225,7 +225,13 @@ class KrakenOrderExecutor:
                 order_type=order_type,
                 limit_price=float(limit_px) if limit_px else None,
             )
-            logger.info(f"[LIVE] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
+            if rowcount == 0:
+                logger.warning(
+                    f"[LIVE] strategy_performance write returned 0 rows "
+                    f"(possible ON CONFLICT skip): pair={pair} entry_ts={entry_ts}"
+                )
+            else:
+                logger.info(f"[LIVE] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
         except Exception as e:
             logger.error(f"[LIVE] Failed to write to strategy_performance: {e}")
 
