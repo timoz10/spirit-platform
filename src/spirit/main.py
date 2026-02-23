@@ -78,7 +78,7 @@ class SpiritOrchestrator:
     def __init__(self, context_manager, strategies, trade_state_manager, order_executor,
                  risk_gate, mode, interval, monitoring_intervals, pairs,
                  update_state=None, web_inc=None, web_sig=None, web_dec=None,
-                 registry=None):
+                 registry=None, event_bus=None, readiness_gate=None):
         self.context_manager = context_manager      # ContextManager
         self.strategies = strategies                 # Dict[str, BaseStrategy]
         self.pairs = pairs                           # List[str]
@@ -90,6 +90,8 @@ class SpiritOrchestrator:
         self.interval = interval
         self.monitoring_intervals = set(monitoring_intervals)
         self.registry = registry                     # StrategyRegistry (None for non-Spine)
+        self.event_bus = event_bus                   # PgEventBus or None
+        self.readiness_gate = readiness_gate         # DataReadinessGate or None
         self.data_source = None  # set after data source creation
         self.csv_thread = None
 
@@ -168,6 +170,19 @@ class SpiritOrchestrator:
             # Thread-local routing for get_spirit_temp_ti()
             from spirit.utils.db_utils import set_active_pair
             set_active_pair(pair)
+
+            # Pipeline readiness gate: wait for upstream D-Limit data
+            if self.readiness_gate is not None and self.readiness_gate.enabled:
+                candle_dt_iso = ctx.health.get('last_candle_time')
+                if candle_dt_iso:
+                    ready = self.readiness_gate.wait_for_dlimit(
+                        pair, candle_dt_iso, interval=self.interval
+                    )
+                    if not ready:
+                        self._cb_logger.warning(
+                            f"[{pair}][PIPELINE] D-Limit not ready for {candle_dt_iso}, "
+                            f"evaluating with possibly stale data"
+                        )
 
             result = strategy.evaluate_trade(
                 pair, mode=self.mode, open_trade=tsm.open_trade
@@ -579,6 +594,14 @@ class SpiritOrchestrator:
         # Cancel all pending limit orders before shutdown
         for pair, pending in list(self.pending_orders.all_pending().items()):
             self._cancel_pending_limit(pair, pending, reason='shutdown')
+
+        # Stop pipeline event bus
+        if self.event_bus is not None:
+            try:
+                self.event_bus.stop()
+                self.logger.info("Pipeline event bus stopped")
+            except Exception:
+                pass
 
         self.context_manager.save_all()
         self.logger.info("Final state saved to PG for all pairs")
@@ -1205,6 +1228,55 @@ def main():
         from spirit.web import increment_candles as web_inc, record_signal as web_sig, record_decision as web_dec
 
     # ---------------------------------------------------------------
+    # Pipeline event bus (live mode only)
+    # ---------------------------------------------------------------
+
+    event_bus = None
+    readiness_gate = None
+    pipeline_bus_mode = get_config('PIPELINE_EVENT_BUS', 'none')
+    is_live_mode = args.data_source == 'kraken'
+
+    if pipeline_bus_mode == 'pg' and is_live_mode:
+        try:
+            from spirit.pipeline.pg_event_bus import PgEventBus
+            from spirit.pipeline.readiness_gate import DataReadinessGate
+            from spirit.utils.db_connection import get_listen_connection, get_connection
+
+            readiness_timeout = float(get_config('PIPELINE_READINESS_TIMEOUT', '45'))
+            event_bus = PgEventBus(
+                listen_conn_factory=get_listen_connection,
+                publish_conn_factory=get_connection,
+            )
+            readiness_gate = DataReadinessGate(
+                event_bus=event_bus,
+                timeout=readiness_timeout,
+            )
+
+            # Wire pipeline events to strategy cache invalidation
+            def _on_dlimit_event(event):
+                strategy = strategies.get(event.pair)
+                if strategy and hasattr(strategy, 'on_pipeline_event'):
+                    try:
+                        strategy.on_pipeline_event(event)
+                    except Exception as e:
+                        logger.debug(f"[PIPELINE] on_pipeline_event error: {e}")
+
+            event_bus.subscribe('pipeline_dlimit_60m', _on_dlimit_event)
+            event_bus.subscribe('pipeline_dlimit_15m', _on_dlimit_event)
+            event_bus.start()
+            logger.info(
+                f"[PIPELINE] Event bus active: mode=pg, "
+                f"readiness_timeout={readiness_timeout}s"
+            )
+        except Exception as e:
+            logger.warning(f"[PIPELINE] Event bus init failed (degrading gracefully): {e}")
+            event_bus = None
+            readiness_gate = None
+    else:
+        if is_live_mode and pipeline_bus_mode != 'pg':
+            logger.info(f"[PIPELINE] Event bus disabled (PIPELINE_EVENT_BUS={pipeline_bus_mode})")
+
+    # ---------------------------------------------------------------
     # Create orchestrator
     # ---------------------------------------------------------------
 
@@ -1223,6 +1295,8 @@ def main():
         web_sig=web_sig,
         web_dec=web_dec,
         registry=registry,
+        event_bus=event_bus,
+        readiness_gate=readiness_gate,
     )
 
     # ---------------------------------------------------------------
