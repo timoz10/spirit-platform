@@ -119,6 +119,14 @@ class BaseStrategy(ABC):
         """Called after trade exit is processed. Update cooldowns, clean up state."""
         pass
 
+    def on_pipeline_event(self, event) -> None:
+        """Called when an upstream pipeline stage completes (e.g. D-Limit writes zones).
+
+        Override to invalidate caches, reload data, or react to upstream changes.
+        The event is a PipelineEvent with stage, pair, interval_minutes, candle_dt.
+        """
+        pass
+
     @property
     def uses_risk_gate(self) -> bool:
         """Whether entries from this strategy route through RiskGate for sizing."""
