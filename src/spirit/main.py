@@ -78,7 +78,8 @@ class SpiritOrchestrator:
     def __init__(self, context_manager, strategies, trade_state_manager, order_executor,
                  risk_gate, mode, interval, monitoring_intervals, pairs,
                  update_state=None, web_inc=None, web_sig=None, web_dec=None,
-                 registry=None, event_bus=None, readiness_gate=None):
+                 registry=None, event_bus=None, readiness_gate=None,
+                 run_id='live'):
         self.context_manager = context_manager      # ContextManager
         self.strategies = strategies                 # Dict[str, BaseStrategy]
         self.pairs = pairs                           # List[str]
@@ -92,6 +93,7 @@ class SpiritOrchestrator:
         self.registry = registry                     # StrategyRegistry (None for non-Spine)
         self.event_bus = event_bus                   # PgEventBus or None
         self.readiness_gate = readiness_gate         # DataReadinessGate or None
+        self.run_id = run_id                         # 'live' or UUID for replay
         self.data_source = None  # set after data source creation
         self.csv_thread = None
 
@@ -224,6 +226,7 @@ class SpiritOrchestrator:
                                     signal, risk_decision, pair,
                                     getattr(signal, 'strategy_name', None) or 'zone_bounce',
                                     source=self.mode,
+                                    run_id=self.run_id,
                                 )
                         except Exception:
                             pass
@@ -336,6 +339,7 @@ class SpiritOrchestrator:
                                     signal, risk_decision, pair,
                                     strategy_name or 'unknown',
                                     source=self.mode,
+                                    run_id=self.run_id,
                                 )
                         except Exception:
                             pass
@@ -417,10 +421,12 @@ class SpiritOrchestrator:
         exit_price = float(getattr(trade_record, 'exit_price', 0) or 0)
         exit_reason = getattr(trade_record, 'exit_reason', '') or ''
         exit_dt = getattr(trade_record, 'exit_datetime', None)
+        net_pnl_pct = getattr(trade_record, 'pnl_pct', None)  # From executor (net, after fees)
         strategy = self.strategies.get(pair)
         if strategy and hasattr(strategy, 'on_exit_completed'):
             try:
-                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price, exit_dt=exit_dt)
+                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price,
+                                           exit_dt=exit_dt, net_pnl_pct=net_pnl_pct)
             except Exception as e:
                 self._cb_logger.debug(f"[{pair}:{strategy_name}] on_exit_completed error: {e}")
 
@@ -428,7 +434,7 @@ class SpiritOrchestrator:
         try:
             writer = _get_risk_gate_writer()
             if writer and entry_price > 0 and entry_datetime:
-                pnl_pct = (exit_price - entry_price) / entry_price * 100.0
+                pnl_pct = net_pnl_pct if net_pnl_pct is not None else ((exit_price - entry_price) / entry_price * 100.0)
                 writer.update_outcome(
                     pair=pair,
                     entry_timestamp=str(entry_datetime),
@@ -436,6 +442,7 @@ class SpiritOrchestrator:
                     is_win=pnl_pct > 0,
                     pnl_pct=round(pnl_pct, 4),
                     exit_reason=exit_reason,
+                    run_id=self.run_id,
                 )
         except Exception:
             pass
@@ -671,6 +678,7 @@ class SpiritOrchestrator:
                             signal, risk_decision, pair,
                             getattr(signal, 'strategy_name', None) or 'zone_bounce',
                             source=self.mode,
+                            run_id=self.run_id,
                         )
                 except Exception:
                     pass
@@ -737,9 +745,11 @@ class SpiritOrchestrator:
         exit_price = float(getattr(trade_record, 'exit_price', 0) or 0)
         exit_reason = getattr(trade_record, 'exit_reason', '') or ''
         exit_dt = getattr(trade_record, 'exit_datetime', None)
+        net_pnl_pct = getattr(trade_record, 'pnl_pct', None)  # From executor (net, after fees)
         if strategy and hasattr(strategy, 'on_exit_completed'):
             try:
-                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price, exit_dt=exit_dt)
+                strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price,
+                                           exit_dt=exit_dt, net_pnl_pct=net_pnl_pct)
             except Exception as e:
                 self._cb_logger.debug(f"[{pair}] on_exit_completed error: {e}")
 
@@ -747,7 +757,7 @@ class SpiritOrchestrator:
         try:
             writer = _get_risk_gate_writer()
             if writer and entry_price > 0 and entry_datetime:
-                pnl_pct = (exit_price - entry_price) / entry_price * 100.0
+                pnl_pct = net_pnl_pct if net_pnl_pct is not None else ((exit_price - entry_price) / entry_price * 100.0)
                 writer.update_outcome(
                     pair=pair,
                     entry_timestamp=str(entry_datetime),
@@ -755,6 +765,7 @@ class SpiritOrchestrator:
                     is_win=pnl_pct > 0,
                     pnl_pct=round(pnl_pct, 4),
                     exit_reason=exit_reason,
+                    run_id=self.run_id,
                 )
         except Exception:
             pass
@@ -991,7 +1002,50 @@ def main():
     parser.add_argument('--end', type=str, default=None, help='Replay end date (YYYY-MM-DD)')
     parser.add_argument('--with-monitoring', action='store_true',
                         help='Include monitoring intervals (1m) in replay for dynamic exit')
+    parser.add_argument('--run-tag', type=str, default=None,
+                        help='Human-readable label for this replay run (e.g. "baseline")')
+    parser.add_argument('--list-runs', action='store_true',
+                        help='Print replay run table and exit')
+    parser.add_argument('--delete-run', type=str, default=None, metavar='RUN_ID',
+                        help='Delete all data for a specific run ID and exit')
     args = parser.parse_args()
+
+    # --list-runs: print run table and exit
+    if args.list_runs:
+        from spirit.utils.run_manager import list_runs
+        runs = list_runs(limit=30)
+        if not runs:
+            print("No replay runs found.")
+        else:
+            print(f"{'ID':>8}  {'Tag':<15}  {'Strategy':<15}  {'Pairs':<30}  "
+                  f"{'Range':<25}  {'Status':<10}  {'Trades':>6}  {'WR':>6}  {'PF':>6}  {'Net%':>8}")
+            print("-" * 160)
+            for r in runs:
+                rid = r['id'][:8] + '...'
+                tag = (r.get('tag') or '-')[:15]
+                strat = (r.get('strategy_name') or '-')[:15]
+                pairs_str = (r.get('pairs') or '-')[:30]
+                date_range = f"{r.get('start_date', '?')} to {r.get('end_date', '?')}"
+                status = r.get('status', '?')
+                trades = r.get('total_trades') or 0
+                wr = f"{float(r['win_rate']):.1%}" if r.get('win_rate') is not None else '-'
+                pf = f"{float(r['profit_factor']):.2f}" if r.get('profit_factor') is not None else '-'
+                net = f"{float(r['net_pnl_pct']):.2f}" if r.get('net_pnl_pct') is not None else '-'
+                print(f"{rid:>8}  {tag:<15}  {strat:<15}  {pairs_str:<30}  "
+                      f"{date_range:<25}  {status:<10}  {trades:>6}  {wr:>6}  {pf:>6}  {net:>8}")
+        return
+
+    # --delete-run: delete run data and exit
+    if args.delete_run:
+        from spirit.utils.run_manager import delete_run
+        try:
+            counts = delete_run(args.delete_run)
+            print(f"Deleted run {args.delete_run[:8]}...:")
+            for table, n in counts.items():
+                print(f"  {table}: {n} rows")
+        except ValueError as e:
+            print(f"Error: {e}")
+        return
 
     # --replay implies --csv-style flow (non-live) with paper mode
     if args.replay:
@@ -1002,6 +1056,14 @@ def main():
             args.mode = 'paper'
         # Expose replay start for PIT-safe calibration in scorer/regime engine
         os.environ['SPIRIT_REPLAY_START'] = args.start
+
+    # Generate run_id for replay runs (live/paper use 'live')
+    from spirit.utils.run_manager import LIVE_RUN_ID
+    if args.replay:
+        from spirit.utils.run_manager import generate_run_id, register_run
+        run_id = generate_run_id()
+    else:
+        run_id = LIVE_RUN_ID
 
     # ---------------------------------------------------------------
     # Determine pairs and create per-pair strategy instances
@@ -1133,6 +1195,7 @@ def main():
             order_executor = KrakenOrderExecutor(
                 starting_equity=float(os.getenv('ACCOUNT_EQUITY', '10000')),
                 pair_info=pair_info,
+                run_id=run_id,
             )
         elif trading_enabled and args.mode == 'paper':
             from spirit.utils.kraken_api_client import KRAKEN_PAIR_DEFAULTS
@@ -1145,6 +1208,7 @@ def main():
                 fee_pct=float(get_config('PAPER_FEE_PCT', '0.40')),
                 pair_info=pair_info,
                 replay_mode=(args.data_source == 'replay'),
+                run_id=run_id,
             )
     except (ImportError, ValueError, OSError) as e:
         logger.exception(f"Order executor init failed: {e}")
@@ -1280,6 +1344,10 @@ def main():
     # Create orchestrator
     # ---------------------------------------------------------------
 
+    # Set run_id on strategy instances (for scorer outcome recording via on_exit_completed)
+    for pair_key, s in strategies.items():
+        s.run_id = run_id
+
     orch = SpiritOrchestrator(
         context_manager=context_manager,
         strategies=strategies,
@@ -1297,6 +1365,7 @@ def main():
         registry=registry,
         event_bus=event_bus,
         readiness_gate=readiness_gate,
+        run_id=run_id,
     )
 
     # ---------------------------------------------------------------
@@ -1516,6 +1585,26 @@ def main():
     # CSV / PG replay loop
     # ---------------------------------------------------------------
 
+    # Register replay run in the registry (after pairs/strategy are known)
+    if args.replay and run_id != LIVE_RUN_ID:
+        try:
+            register_run(
+                run_id=run_id,
+                strategy_name=strategy_name,
+                pairs=pairs,
+                start_date=args.start,
+                end_date=args.end,
+                tag=args.run_tag,
+                config={
+                    'mode': args.mode,
+                    'with_monitoring': getattr(args, 'with_monitoring', False),
+                    'buffer_size': args.buffer_size,
+                },
+                git_hash=git_hash,
+            )
+        except Exception as e:
+            logger.warning(f"[RUN] Failed to register run: {e}")
+
     if is_csv:
         import threading
         replay_label = "PG Replay" if args.data_source == 'replay' else "CSV Replay"
@@ -1551,6 +1640,14 @@ def main():
                 logger.info(f"[SHADOW] Post-replay shadow calc: {shadow_count} decisions processed")
             except Exception as e:
                 logger.debug(f"[SHADOW] Shadow calc skipped: {e}")
+
+        # Finalize replay run (compute summary stats)
+        if args.replay and run_id != LIVE_RUN_ID:
+            try:
+                from spirit.utils.run_manager import finalize_run
+                finalize_run(run_id, status='completed')
+            except Exception as e:
+                logger.warning(f"[RUN] Failed to finalize run: {e}")
 
         orch.graceful_shutdown(no_pause=args.no_pause, is_csv=True)
         return

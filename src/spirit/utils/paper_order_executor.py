@@ -39,6 +39,7 @@ class PaperOrderExecutor:
         pair: Optional[str] = None,
         pair_info: Optional[Dict] = None,
         replay_mode: bool = False,
+        run_id: str = 'live',
     ):
         from spirit.config import KRAKEN_PAIR
 
@@ -51,6 +52,7 @@ class PaperOrderExecutor:
         self.fee_pct = float(fee_pct)
         self._seq = 0
         self.replay_mode = replay_mode
+        self.run_id = run_id
 
         mode_label = "REPLAY" if replay_mode else "PAPER"
         logger.info(
@@ -412,6 +414,7 @@ class PaperOrderExecutor:
         trade_record.order_id = order_id
         trade_record.fee = total_fee
         trade_record.pnl = pnl  # Store net PnL (after fees)
+        trade_record.pnl_pct = round((pnl / notional_at_entry * 100.0) if notional_at_entry else 0.0, 4)
 
         sig = trade_record.signal_exit_price
         logger.info(
@@ -453,6 +456,9 @@ class PaperOrderExecutor:
             order_type = getattr(open_trade, 'order_type', None) or 'market'
             limit_px = getattr(open_trade, 'limit_price', None)
 
+            # trend_direction_entry holds D-Limit trend_state (with regime fallback)
+            dlimit_ts = getattr(open_trade, 'trend_direction_entry', None)
+
             rowcount = record_trade(
                 timestamp=now,
                 entry_timestamp=entry_ts,
@@ -464,9 +470,11 @@ class PaperOrderExecutor:
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 regime_at_entry=regime,
+                dlimit_trend_state=dlimit_ts,
                 source='replay' if self.replay_mode else 'paper',
                 order_type=order_type,
                 limit_price=float(limit_px) if limit_px else None,
+                run_id=self.run_id,
             )
             if rowcount == 0:
                 logger.warning(

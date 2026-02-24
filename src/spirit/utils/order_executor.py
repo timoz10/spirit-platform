@@ -26,6 +26,7 @@ class KrakenOrderExecutor:
         starting_equity: float = 10000.0,
         fill_poll_interval: float = 2.0,
         fill_poll_timeout: float = 30.0,
+        run_id: str = 'live',
     ):
         from spirit.config import KRAKEN_PAIR
 
@@ -35,6 +36,7 @@ class KrakenOrderExecutor:
         self.fill_poll_interval = fill_poll_interval
         self.fill_poll_timeout = fill_poll_timeout
         self._entry_txid: Optional[str] = None
+        self.run_id = run_id
 
         logger.info(
             f"[LIVE] Initialized: equity=${self.equity:.2f} pair={self.pair} "
@@ -210,6 +212,9 @@ class KrakenOrderExecutor:
             order_type = getattr(open_trade, 'order_type', None) or 'market'
             limit_px = getattr(open_trade, 'limit_price', None)
 
+            # trend_direction_entry holds D-Limit trend_state (with regime fallback)
+            dlimit_ts = getattr(open_trade, 'trend_direction_entry', None)
+
             rowcount = record_trade(
                 timestamp=now,
                 entry_timestamp=entry_ts,
@@ -221,9 +226,11 @@ class KrakenOrderExecutor:
                 exit_price=exit_price,
                 exit_reason=exit_reason,
                 regime_at_entry=regime,
+                dlimit_trend_state=dlimit_ts,
                 source='live',
                 order_type=order_type,
                 limit_price=float(limit_px) if limit_px else None,
+                run_id=self.run_id,
             )
             if rowcount == 0:
                 logger.warning(
@@ -540,6 +547,7 @@ class KrakenOrderExecutor:
             trade_record.exit_price = fill_price
         trade_record.fee = total_fee
         trade_record.pnl = pnl
+        trade_record.pnl_pct = round((pnl / notional_at_entry * 100.0) if notional_at_entry else 0.0, 4)
 
         # Update equity
         self.equity += (fill_cost - fill_fee)
