@@ -115,7 +115,8 @@ class BaseStrategy(ABC):
         pass
 
     def on_exit_completed(self, pair: str, exit_reason: str,
-                          exit_price: float, entry_price: float) -> None:
+                          exit_price: float, entry_price: float,
+                          exit_dt=None, net_pnl_pct: float = None) -> None:
         """Called after trade exit is processed. Update cooldowns, clean up state."""
         pass
 
