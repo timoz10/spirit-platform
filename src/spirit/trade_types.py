@@ -14,6 +14,7 @@ class TradeRecord:
     signal_exit_price: Optional[float] = None
     buy_amount: Optional[float] = None
     pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None  # Net PnL % (after fees), set by executor
     macd_bullish_cross_entry: Optional[bool] = None
     atr_entry: Optional[float] = None
     sma200_entry: Optional[float] = None
