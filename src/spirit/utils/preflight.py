@@ -88,7 +88,7 @@ def _check_pg_tables() -> CheckResult:
         from spirit.utils.db_connection import execute_query
         rows = execute_query(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            "WHERE table_schema IN ('public', 'prod') AND table_name = ANY(%s)",
             (required_tables,),
         )
         found = {r['table_name'] for r in rows} if rows else set()
