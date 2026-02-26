@@ -327,7 +327,8 @@ class SpiritContext:
             # Check existence first (works with read-only perms)
             row = execute_query(
                 "SELECT 1 FROM information_schema.tables "
-                "WHERE table_schema = 'public' AND table_name = 'spirit_state'",
+                "WHERE table_name = 'spirit_state' "
+                "AND table_schema = ANY(string_to_array(current_setting('search_path'), ', '))",
                 fetch='one',
             )
             if row:
