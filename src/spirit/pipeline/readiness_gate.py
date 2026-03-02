@@ -19,6 +19,18 @@ from spirit.pipeline.event_logger import check_event_exists
 logger = get_logger("readiness_gate")
 
 
+def _normalize_candle_dt(candle_dt: str) -> str:
+    """Ensure candle_dt has +00:00 suffix for consistent string matching.
+
+    OHLC daemons produce tz-aware strings ('2026-03-02T09:00:00+00:00')
+    but Spirit context strips timezone ('2026-03-02T09:00:00'). The
+    PgEventBus.wait_for() uses string equality, so both sides must match.
+    """
+    if candle_dt and not candle_dt.endswith('+00:00'):
+        return candle_dt + '+00:00'
+    return candle_dt
+
+
 class DataReadinessGate:
     """Blocks until upstream pipeline stage confirms fresh data.
 
@@ -62,6 +74,7 @@ class DataReadinessGate:
         if self._event_bus is None:
             return True
 
+        candle_dt = _normalize_candle_dt(candle_dt)
         stage = f"dlimit_{interval}m"
         channel = f"pipeline_{stage}"
 
@@ -106,6 +119,7 @@ class DataReadinessGate:
         if self._event_bus is None:
             return True
 
+        candle_dt = _normalize_candle_dt(candle_dt)
         channel = "pipeline_ohlc"
 
         if check_event_exists('ohlc', pair, interval, candle_dt):
