@@ -972,11 +972,9 @@ def main():
     except Exception:
         git_hash = 'unknown'
     strategy_name = get_config('SPIRIT_STRATEGY', 'none')
-    pairs_cfg = get_config('SPIRIT_PAIRS', '')
     mode_label = 'replay' if '--replay' in sys.argv else get_config('SPIRIT_MODE', 'paper')
     logger.info(
-        f"Spirit v={git_hash} strategy={strategy_name} "
-        f"pairs={pairs_cfg or 'default'} mode={mode_label}"
+        f"Spirit v={git_hash} strategy={strategy_name} mode={mode_label}"
     )
 
     # Start web dashboard if enabled
@@ -1069,25 +1067,19 @@ def main():
     # Determine pairs and create per-pair strategy instances
     # ---------------------------------------------------------------
 
-    # SPIRIT_PAIRS config override (e.g. "XBTUSD,ETHUSD,SOLUSD")
-    pairs_str = (get_config('SPIRIT_PAIRS', '') or '').strip()
-    config_pairs = [p.strip() for p in pairs_str.split(',') if p.strip()] if pairs_str else []
+    # Env var override for dev/replay (e.g. SPIRIT_PAIRS="XBTUSD,ETHUSD")
+    env_pairs_str = (os.environ.get('SPIRIT_PAIRS', '') or '').strip()
+    if env_pairs_str:
+        pairs = [p.strip() for p in env_pairs_str.split(',') if p.strip()]
+        logger.info(f"Pairs from env override: {pairs}")
+    else:
+        from spirit.utils.pair_registry import get_active_pairs
+        pairs = get_active_pairs()
+        logger.info(f"Pairs from registry: {pairs}")
 
     # Create a probe strategy to read DataRequirements (cheap — no cache loading)
     probe_strategy = get_strategy()
     trading_enabled = probe_strategy is not None
-
-    requirements = None
-    if trading_enabled:
-        requirements = probe_strategy.get_data_requirements()
-
-    # Final pair list: config override > strategy requirements > default
-    if config_pairs:
-        pairs = config_pairs
-    elif requirements:
-        pairs = requirements.pairs
-    else:
-        pairs = [get_config('KRAKEN_PAIR', 'XBTUSD')]
 
     # Create one strategy instance per pair
     strategies = {}
