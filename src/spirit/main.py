@@ -1256,10 +1256,16 @@ def main():
                     tsm.open_trade = ctx.open_trade
                     logger.info(f"[{pair}] Restored open trade into TradeStateManager")
             if ctx.equity > 0 and order_executor and hasattr(order_executor, 'equity'):
-                order_executor.equity = ctx.equity
-                logger.info(f"[{pair}] Restored equity: ${ctx.equity:.2f}")
-                if risk_gate:
-                    risk_gate.update_equity(ctx.equity)
+                if args.mode == 'paper':
+                    logger.info(
+                        f"[{pair}] Skipping equity restore for paper mode "
+                        f"(stale=${ctx.equity:.2f}, using starting=${order_executor.equity:.2f})"
+                    )
+                else:
+                    order_executor.equity = ctx.equity
+                    logger.info(f"[{pair}] Restored equity: ${ctx.equity:.2f}")
+                    if risk_gate:
+                        risk_gate.update_equity(ctx.equity)
 
     # Startup reconciliation: cancel orphaned limit orders from previous session
     if trading_enabled and args.mode == 'live' and order_executor is not None:
