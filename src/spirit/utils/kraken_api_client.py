@@ -203,6 +203,95 @@ def get_ohlc_data(count=KRAKEN_OHLC_COUNT, interval=KRAKEN_OHLC_INTERVAL, pair=K
             candles = candles[:-1]
     return candles
 
+def get_orderbook_depth(pair: str = KRAKEN_PAIR, count: int = 100) -> dict:
+    """Fetch orderbook depth from Kraken public Depth API.
+
+    Args:
+        pair: Trading pair (e.g. 'XBTUSD')
+        count: Number of levels per side (max 500; above 500 Kraken silently caps to 100)
+
+    Returns:
+        {'asks': [[price, volume, ts], ...], 'bids': [[price, volume, ts], ...]}
+        where price/volume are float and ts is int.
+    """
+    from spirit.logger import logger
+    url = f"{KRAKEN_API_URL}/0/public/Depth"
+    params = {'pair': pair, 'count': min(count, 500)}
+    headers = {
+        'User-Agent': os.environ.get(
+            'KRAKEN_BOT_USER_AGENT', 'kraken-bot/1.0 (+https://example.local)'
+        )
+    }
+    max_retries = int(os.environ.get('KRAKEN_API_MAX_RETRIES', 3))
+    backoff_base = float(os.environ.get('KRAKEN_API_BACKOFF_BASE', 1.5))
+    attempt = 0
+    last_exc = None
+
+    while attempt < max_retries:
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            if response.status_code == 429:
+                ra = response.headers.get('Retry-After')
+                sleep_s = backoff_base ** attempt
+                if ra:
+                    try:
+                        sleep_s = max(sleep_s, float(ra))
+                    except (ValueError, TypeError):
+                        pass
+                logger.warning(
+                    f"[API] HTTP 429 on Depth. Retry-After={ra}. "
+                    f"attempt={attempt + 1}/{max_retries}"
+                )
+                time.sleep(sleep_s)
+                attempt += 1
+                continue
+
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get('error'):
+                errs = result['error']
+                if any('rate' in e.lower() for e in errs):
+                    logger.warning(
+                        f"[API] Kraken Depth rate limit: {errs}. "
+                        f"attempt={attempt + 1}/{max_retries}"
+                    )
+                    time.sleep(backoff_base ** attempt)
+                    attempt += 1
+                    continue
+                raise RuntimeError(f"Kraken Depth API error: {errs}")
+
+            # Dynamic pair key extraction (Kraken returns e.g. XXBTZUSD)
+            pair_key = next(k for k in result['result'].keys())
+            raw = result['result'][pair_key]
+
+            def _parse_levels(levels):
+                return [
+                    [float(lvl[0]), float(lvl[1]), int(lvl[2])]
+                    for lvl in levels
+                ]
+
+            return {
+                'asks': _parse_levels(raw.get('asks', [])),
+                'bids': _parse_levels(raw.get('bids', [])),
+            }
+
+        except requests.RequestException as e:
+            last_exc = e
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            logger.warning(
+                f"[API] Depth RequestException status={status} "
+                f"attempt={attempt + 1}/{max_retries}: {e}"
+            )
+            time.sleep(backoff_base ** attempt)
+            attempt += 1
+        except Exception as e:
+            logger.error(f"[API] Unexpected error on get_orderbook_depth: {e}")
+            raise
+
+    raise RuntimeError(f"Failed to fetch orderbook depth after {max_retries} attempts: {last_exc}")
+
+
 def get_ticker(pair=KRAKEN_PAIR):
     """Fetch bid/ask/last from Kraken public Ticker API (no auth needed)."""
     url = f"{KRAKEN_API_URL}/0/public/Ticker"
