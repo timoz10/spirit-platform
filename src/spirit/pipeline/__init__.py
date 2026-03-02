@@ -13,10 +13,12 @@ Architecture supports Lite/Pro split:
 from spirit.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from spirit.pipeline.readiness_gate import DataReadinessGate
 from spirit.pipeline.event_logger import record_pipeline_event
+from spirit.pipeline.daemon_health import record_heartbeat
 
 __all__ = [
     'PipelineEvent',
     'PipelineEventBus',
     'DataReadinessGate',
     'record_pipeline_event',
+    'record_heartbeat',
 ]
