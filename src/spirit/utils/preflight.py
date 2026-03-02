@@ -262,10 +262,13 @@ def _check_profiler_data() -> CheckResult:
     try:
         from datetime import datetime, timedelta, timezone
         from spirit.indicators.decision_engine.engine.risk_reward_profiler import RiskRewardProfiler
-        from spirit.utils.config_loader import get_config
-
-        pairs_str = get_config('SPIRIT_PAIRS', 'XBTUSD')
-        pair = pairs_str.split(',')[0].strip()  # Test with first configured pair
+        import os
+        env_str = os.environ.get('SPIRIT_PAIRS', '').strip()
+        if env_str:
+            pair = env_str.split(',')[0].strip()
+        else:
+            from spirit.utils.pair_registry import get_active_pairs
+            pair = get_active_pairs()[0]  # Test with first active pair
 
         now = datetime.now(timezone.utc)
         start = (now - timedelta(days=30)).strftime('%Y-%m-%d')
