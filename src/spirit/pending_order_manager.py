@@ -31,13 +31,20 @@ class PendingLimitOrder:
     zone_id: Optional[int] = None
     placed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ttl_minutes: int = 60
+    ttl_bars: int = 0               # Bar-based TTL (0 = use time-based only)
+    bars_elapsed: int = 0           # Incremented each tick_bar() call
     buy_amount_usd: float = 0.0
     volume: float = 0.0
+    source: str = 'confirmed'       # 'confirmed' | 'predictive'
     signal_context: Dict = field(default_factory=dict)  # TradeSignal + RiskDecision for fill handoff
 
     @property
     def is_expired(self) -> bool:
-        """True if order has exceeded its TTL."""
+        """True if order has exceeded its TTL (time-based or bar-based)."""
+        # Bar-based expiry (for replay mode and predictive entries)
+        if self.ttl_bars > 0 and self.bars_elapsed >= self.ttl_bars:
+            return True
+        # Time-based expiry (for live/paper mode)
         age = (datetime.now(timezone.utc) - self.placed_at).total_seconds() / 60
         return age >= self.ttl_minutes
 
@@ -45,6 +52,11 @@ class PendingLimitOrder:
     def age_minutes(self) -> float:
         """Minutes since order was placed."""
         return (datetime.now(timezone.utc) - self.placed_at).total_seconds() / 60
+
+    def tick_bar(self) -> bool:
+        """Increment bar counter. Returns True if now expired."""
+        self.bars_elapsed += 1
+        return self.is_expired
 
 
 class PendingOrderManager:
@@ -67,10 +79,13 @@ class PendingOrderManager:
                 f"txid={self._pending[order.pair].txid}"
             )
         self._pending[order.pair] = order
+        ttl_info = f"ttl={order.ttl_minutes}m"
+        if order.ttl_bars > 0:
+            ttl_info += f" ttl_bars={order.ttl_bars}"
         logger.info(
             f"[{order.pair}][LIMIT_PLACED] txid={order.txid} "
-            f"price={order.limit_price:.2f} ttl={order.ttl_minutes}m "
-            f"zone_id={order.zone_id}"
+            f"price={order.limit_price:.2f} {ttl_info} "
+            f"zone_id={order.zone_id} source={order.source}"
         )
 
     def remove(self, pair: str) -> Optional[PendingLimitOrder]:
