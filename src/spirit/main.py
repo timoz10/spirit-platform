@@ -159,6 +159,11 @@ class SpiritOrchestrator:
         if self.data_source and not getattr(self.data_source, 'warmup_complete', True):
             return
 
+        # Dedup: skip 60m evaluation if predictive limit is pending
+        if self.pending_orders.has_pending(pair):
+            self._cb_logger.info(f"[{pair}][EVAL] SKIP — predictive limit pending")
+            return
+
         ctx = self.context_manager.get(pair)
         tsm = self.trade_state_manager.get(pair)
         strategy = self.strategies.get(pair)
@@ -786,6 +791,7 @@ class SpiritOrchestrator:
         """Place a limit order on the exchange and register as pending.
 
         Called from _process_entry() when order_type == 'limit'.
+        Sets predictive-specific TTL (bar-based) when entry_path is 'predictive'.
         """
         if self.order_executor is None:
             self._cb_logger.warning(f"[{pair}] Cannot place limit: no order executor")
@@ -811,14 +817,31 @@ class SpiritOrchestrator:
                 'trade_record_dict': trade_record.__dict__.copy(),
             }
 
+            # Determine TTL and source based on entry path
+            signal = details.get('signal')
+            entry_path = (signal.row_data or {}).get('entry_path', '') if signal else ''
+            is_predictive = entry_path == 'predictive'
+
+            if is_predictive:
+                from spirit.config import PREDICTIVE_TTL_BARS
+                ttl_minutes = PREDICTIVE_TTL_BARS * 60  # bars at 60m = hours -> minutes
+                ttl_bars = PREDICTIVE_TTL_BARS * 60     # bar counter in 1m ticks
+                source = 'predictive'
+            else:
+                ttl_minutes = self.limit_order_ttl
+                ttl_bars = 0  # time-based only
+                source = 'confirmed'
+
             pending = PendingLimitOrder(
                 pair=pair,
                 txid=txid,
                 limit_price=limit_price,
-                zone_id=details.get('signal') and getattr(details['signal'], 'zone_id', None),
-                ttl_minutes=self.limit_order_ttl,
+                zone_id=signal and getattr(signal, 'zone_id', None),
+                ttl_minutes=ttl_minutes,
+                ttl_bars=ttl_bars,
                 buy_amount_usd=getattr(trade_record, 'buy_amount', 0) or 0,
                 volume=getattr(trade_record, 'buy_amount', 0) or 0,
+                source=source,
                 signal_context=signal_context,
             )
             self.pending_orders.place(pending)
@@ -830,13 +853,25 @@ class SpiritOrchestrator:
         """Check a pending limit order for fill or expiry.
 
         Called every 1m tick when a limit order is pending for this pair.
+        Increments bar counter for bar-based TTL expiry.
         """
         pending = self.pending_orders.get_pending(pair)
         if pending is None:
             return
 
-        # Check expiry first
+        # Increment bar counter (for bar-based TTL used by predictive entries)
+        if pending.ttl_bars > 0:
+            pending.tick_bar()
+
+        # Check expiry (time-based or bar-based)
         if pending.is_expired:
+            # Notify strategy for cooldown tracking (predictive entries)
+            strategy = self.strategies.get(pair)
+            if strategy and hasattr(strategy, 'on_limit_expired'):
+                try:
+                    strategy.on_limit_expired(pair, pending.zone_id)
+                except Exception as e:
+                    self._cb_logger.debug(f"[{pair}] on_limit_expired error: {e}")
             self._cancel_pending_limit(pair, pending, reason='expired')
             return
 
