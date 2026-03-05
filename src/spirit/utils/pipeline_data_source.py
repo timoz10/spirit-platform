@@ -211,7 +211,9 @@ class MultiPairPipelineDataSource:
             f"[Pipeline Mode] D-Limit 60m event: {pair} candle_dt={candle_dt}"
         )
 
-        self._fetch_and_trigger(pair, self.primary_interval, candle_dt)
+        self._fetch_and_trigger(
+            pair, self.primary_interval, candle_dt, is_eval_trigger=True,
+        )
 
     def _on_ohlc_event(self, event: PipelineEvent) -> None:
         """OHLC candle available from pipeline.
@@ -241,8 +243,15 @@ class MultiPairPipelineDataSource:
 
     def _fetch_and_trigger(
         self, pair: str, interval: int, candle_dt: str,
+        is_eval_trigger: bool = False,
     ) -> None:
-        """Fetch the specific candle from PG, append to buffer, fire callbacks."""
+        """Fetch the specific candle from PG, append to buffer, fire callbacks.
+
+        Args:
+            is_eval_trigger: If True (D-Limit 60m event), always fire callbacks
+                even if the candle was already in the buffer from warmup.
+                The event is the eval signal, not just a data update.
+        """
         from spirit.utils.db_connection import execute_query
 
         try:
@@ -275,14 +284,19 @@ class MultiPairPipelineDataSource:
 
             buf = self._buffers.get((pair, interval))
             if buf is not None:
-                # Avoid duplicate: check if last record has same datetime
+                # Dedup buffer append (don't add same candle twice)
                 if buf and buf[-1].datetime == record.datetime:
-                    logger.debug(
-                        f"[Pipeline Mode] Duplicate candle skipped: "
-                        f"{pair}/{interval}m dt={candle_dt}"
-                    )
-                    return
-                buf.append(record)
+                    if not is_eval_trigger:
+                        # Monitoring intervals: skip silently
+                        logger.debug(
+                            f"[Pipeline Mode] Duplicate candle skipped: "
+                            f"{pair}/{interval}m dt={candle_dt}"
+                        )
+                        return
+                    # Eval trigger: candle already in buffer from warmup — that's
+                    # fine, still fire callbacks (the event IS the eval signal)
+                else:
+                    buf.append(record)
 
             # Fire callbacks with full window
             window = self.get_window(pair, interval)
@@ -338,7 +352,9 @@ class MultiPairPipelineDataSource:
             f"within {self._fallback_timeout}s — evaluating from PG directly. "
             f"candle_dt={candle_dt}"
         )
-        self._fetch_and_trigger(pair, self.primary_interval, candle_dt)
+        self._fetch_and_trigger(
+            pair, self.primary_interval, candle_dt, is_eval_trigger=True,
+        )
 
     # ------------------------------------------------------------------
     # Callback dispatch
