@@ -1333,6 +1333,8 @@ def main():
     pipeline_bus_mode = get_config('PIPELINE_EVENT_BUS', 'none')
     is_live_mode = args.data_source == 'kraken'
 
+    spirit_data_mode = get_config('SPIRIT_DATA_MODE', 'kraken_api')
+
     if pipeline_bus_mode == 'pg' and is_live_mode:
         try:
             from spirit.pipeline.pg_event_bus import PgEventBus
@@ -1344,10 +1346,17 @@ def main():
                 listen_conn_factory=get_listen_connection,
                 publish_conn_factory=get_connection,
             )
-            readiness_gate = DataReadinessGate(
-                event_bus=event_bus,
-                timeout=readiness_timeout,
-            )
+
+            # In pipeline data mode, the D-Limit event IS the readiness signal —
+            # no gate needed. In kraken_api mode, keep the gate for backward compat.
+            if spirit_data_mode == 'pipeline':
+                readiness_gate = None
+                logger.info("[Pipeline Mode] Readiness gate skipped (event-driven)")
+            else:
+                readiness_gate = DataReadinessGate(
+                    event_bus=event_bus,
+                    timeout=readiness_timeout,
+                )
 
             # Wire pipeline events to strategy cache invalidation
             def _on_dlimit_event(event):
@@ -1440,7 +1449,24 @@ def main():
         )
         multi_pair = True  # ReplayDataSource is always multi-pair style
     elif args.data_source == 'kraken':
-        if multi_pair:
+        if spirit_data_mode == 'pipeline' and event_bus is not None:
+            # Event-driven: pipeline events trigger eval (no Kraken API polling)
+            from spirit.utils.pipeline_data_source import MultiPairPipelineDataSource
+            from spirit.config import PIPELINE_FALLBACK_TIMEOUT
+            logger.info(
+                f"[Pipeline Mode] pairs={pairs} intervals={intervals_list} "
+                f"primary={interval} fallback={PIPELINE_FALLBACK_TIMEOUT}s"
+            )
+            data_source = MultiPairPipelineDataSource(
+                pairs=pairs,
+                intervals=intervals_list,
+                primary_interval=interval,
+                event_bus=event_bus,
+                buffer_size=args.buffer_size,
+                fallback_timeout=PIPELINE_FALLBACK_TIMEOUT,
+            )
+            multi_pair = True
+        elif multi_pair:
             from spirit.utils.multi_pair_data_source import MultiPairLiveDataSource
             logger.info(f"[MultiPair Live] pairs={pairs} intervals={intervals_list} primary={interval}")
             data_source = MultiPairLiveDataSource(
