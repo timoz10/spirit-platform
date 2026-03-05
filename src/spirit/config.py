@@ -66,6 +66,10 @@ RISK_GATE_CALIBRATION_ENABLED = get_config('RISK_GATE_CALIBRATION_ENABLED', 'fal
 RISK_GATE_RECALIBRATE_HOURS = int(get_config('RISK_GATE_RECALIBRATE_HOURS', '24'))
 RISK_GATE_FEEDBACK_WINDOW = int(get_config('RISK_GATE_FEEDBACK_WINDOW', '50'))
 
+# --- Data mode ---
+SPIRIT_DATA_MODE = get_config('SPIRIT_DATA_MODE', 'kraken_api')  # 'kraken_api' or 'pipeline'
+PIPELINE_FALLBACK_TIMEOUT = float(get_config('PIPELINE_FALLBACK_TIMEOUT', '90'))
+
 # --- Strategy selection ---
 # Set SPIRIT_STRATEGY env var to load a trading algorithm.
 # If not set, Spirit starts in monitor-only mode (no trades).
