@@ -276,7 +276,7 @@ class MultiPairPipelineDataSource:
             buf = self._buffers.get((pair, interval))
             if buf is not None:
                 # Avoid duplicate: check if last record has same datetime
-                if buf and buf[-1].dt == record.dt:
+                if buf and buf[-1].datetime == record.datetime:
                     logger.debug(
                         f"[Pipeline Mode] Duplicate candle skipped: "
                         f"{pair}/{interval}m dt={candle_dt}"
