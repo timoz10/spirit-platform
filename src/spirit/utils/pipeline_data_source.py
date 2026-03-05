@@ -169,6 +169,7 @@ class MultiPairPipelineDataSource:
                                 high=r['high'], low=r['low'],
                                 close=r['close'], vwap=r.get('vwap'),
                                 volume=r['volume'], count=r.get('count'),
+                                timestamp=r.get('timestamp', None),
                             )
                             for r in reversed(rows)
                         ]
@@ -269,6 +270,7 @@ class MultiPairPipelineDataSource:
                 high=rows[0]['high'], low=rows[0]['low'],
                 close=rows[0]['close'], vwap=rows[0].get('vwap'),
                 volume=rows[0]['volume'], count=rows[0].get('count'),
+                timestamp=rows[0].get('timestamp', None),
             )
 
             buf = self._buffers.get((pair, interval))
