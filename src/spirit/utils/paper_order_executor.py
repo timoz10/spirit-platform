@@ -459,6 +459,10 @@ class PaperOrderExecutor:
             # trend_direction_entry holds D-Limit trend_state (with regime fallback)
             dlimit_ts = getattr(open_trade, 'trend_direction_entry', None)
 
+            # MFE/MAE stashed on open_trade by strategy monitoring tick
+            mfe = getattr(open_trade, 'mfe_pct', None)
+            mae = getattr(open_trade, 'mae_pct', None)
+
             rowcount = record_trade(
                 timestamp=now,
                 entry_timestamp=entry_ts,
@@ -475,6 +479,8 @@ class PaperOrderExecutor:
                 order_type=order_type,
                 limit_price=float(limit_px) if limit_px else None,
                 run_id=self.run_id,
+                mfe_pct=round(mfe, 4) if mfe is not None else None,
+                mae_pct=round(mae, 4) if mae is not None else None,
             )
             if rowcount == 0:
                 logger.warning(
