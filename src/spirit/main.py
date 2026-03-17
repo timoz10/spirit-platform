@@ -252,6 +252,10 @@ class SpiritOrchestrator:
                             signal_for_exit = details.get('signal')
                             if hasattr(strategy, 'on_entry_confirmed') and signal_for_exit:
                                 strategy.on_entry_confirmed(pair, signal_for_exit, risk_decision)
+                            # Attach entry_context to trade_record for PG persistence (#175)
+                            _atc = getattr(strategy, '_active_trade_context', {}).get(pair, {})
+                            if _atc.get('entry_context'):
+                                trade_record.entry_context = _atc['entry_context']
 
             if entry_flag and trade_record is not None:
                 process_trade_signals(
@@ -365,6 +369,10 @@ class SpiritOrchestrator:
                             signal_for_exit = details.get('signal')
                             if hasattr(strategy, 'on_entry_confirmed') and signal_for_exit:
                                 strategy.on_entry_confirmed(pair, signal_for_exit, risk_decision)
+                            # Attach entry_context to trade_record for PG persistence (#175)
+                            _atc = getattr(strategy, '_active_trade_context', {}).get(pair, {})
+                            if _atc.get('entry_context'):
+                                trade_record.entry_context = _atc['entry_context']
 
             # Check concurrency limit before opening
             if entry_flag and trade_record is not None:
@@ -704,6 +712,10 @@ class SpiritOrchestrator:
                     signal_for_exit = details.get('signal')
                     if strategy and hasattr(strategy, 'on_entry_confirmed') and signal_for_exit:
                         strategy.on_entry_confirmed(pair, signal_for_exit, risk_decision)
+                    # Attach entry_context to trade_record for PG persistence (#175)
+                    _atc = getattr(strategy, '_active_trade_context', {}).get(pair, {})
+                    if _atc.get('entry_context'):
+                        trade_record.entry_context = _atc['entry_context']
 
         if entry_flag and trade_record is not None:
             # Branch on order type: limit orders get placed as pending,
@@ -939,6 +951,10 @@ class SpiritOrchestrator:
                     position_size_usd=getattr(trade_record, 'buy_amount', 0) or 0,
                 )
                 strategy.on_entry_confirmed(pair, signal, risk_decision)
+                # Attach entry_context to open trade for PG persistence (#175)
+                _atc = getattr(strategy, '_active_trade_context', {}).get(pair, {})
+                if _atc.get('entry_context') and tsm.open_trade is not None:
+                    tsm.open_trade.entry_context = _atc['entry_context']
             except Exception as e:
                 self._cb_logger.debug(f"[{pair}] on_entry_confirmed after limit fill: {e}")
 
