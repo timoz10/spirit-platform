@@ -258,10 +258,15 @@ class SpiritOrchestrator:
                                 trade_record.entry_context = _atc['entry_context']
 
             if entry_flag and trade_record is not None:
-                process_trade_signals(
-                    "buy", trade_record, self.mode, tsm,
-                    order_executor=self.order_executor, logger=self._cb_logger,
-                )
+                # Route limit orders through pending system, market orders immediate
+                order_type = getattr(trade_record, 'order_type', None) or 'market'
+                if order_type == 'limit' and self.mode in ('live', 'paper'):
+                    self._place_pending_limit(pair, trade_record, details)
+                else:
+                    process_trade_signals(
+                        "buy", trade_record, self.mode, tsm,
+                        order_executor=self.order_executor, logger=self._cb_logger,
+                    )
                 if tsm.open_trade is not None:
                     ctx.set_open_trade(tsm.open_trade)
                 if self._update_state and tsm.open_trade is not None:
@@ -857,6 +862,11 @@ class SpiritOrchestrator:
                 signal_context=signal_context,
             )
             self.pending_orders.place(pending)
+            self._cb_logger.info(
+                f"[{pair}][LIMIT_PLACED] txid={txid} limit={limit_price:.4f} "
+                f"signal_price={getattr(trade_record, 'entry_price', 'N/A')} "
+                f"ttl={ttl_minutes}m source={source} entry_path={entry_path}"
+            )
 
         except Exception as e:
             self._cb_logger.error(f"[{pair}] Failed to place limit order: {e}")
@@ -866,6 +876,9 @@ class SpiritOrchestrator:
 
         Called every 1m tick when a limit order is pending for this pair.
         Increments bar counter for bar-based TTL expiry.
+
+        IMPORTANT: Fill check runs BEFORE expiry check (#181) so that a candle
+        arriving on the same tick as TTL expiry still gets a chance to fill.
         """
         pending = self.pending_orders.get_pending(pair)
         if pending is None:
@@ -875,8 +888,39 @@ class SpiritOrchestrator:
         if pending.ttl_bars > 0:
             pending.tick_bar()
 
-        # Check expiry (time-based or bar-based)
+        # --- Fill check FIRST (before expiry) ---
+        # A candle that arrives on the same tick as TTL should still fill (#181)
+        candle_low = float(candle.get('low', 0)) if candle else 0
+        if self.mode == 'paper':
+            fill_status = self.order_executor.check_limit_fill(pending.txid, candle)
+        else:
+            fill_status = self.order_executor.check_order_status(pending.txid)
+
+        status = fill_status.get('status', 'unknown')
+
+        if status == 'closed':
+            # Filled — transition to open trade
+            self._cb_logger.info(
+                f"[{pair}][LIMIT_FILL_CHECK] FILLED age={pending.age_minutes:.1f}m "
+                f"candle_low={candle_low} limit={pending.limit_price}"
+            )
+            self._on_limit_filled(pair, pending, fill_status)
+            return
+        elif status in ('canceled', 'expired'):
+            # Exchange cancelled the order
+            self.pending_orders.remove(pair)
+            self._cb_logger.info(
+                f"[{pair}][LIMIT_CANCEL] Exchange {status}: txid={pending.txid}"
+            )
+            return
+
+        # --- Expiry check (after fill check) ---
         if pending.is_expired:
+            self._cb_logger.info(
+                f"[{pair}][LIMIT_EXPIRE] age={pending.age_minutes:.1f}m "
+                f"ttl={pending.ttl_minutes}m candle_low={candle_low} "
+                f"limit={pending.limit_price} gap={candle_low - pending.limit_price:.4f}"
+            )
             # Notify strategy for cooldown tracking (predictive entries)
             strategy = self.strategies.get(pair)
             if strategy and hasattr(strategy, 'on_limit_expired'):
@@ -887,22 +931,12 @@ class SpiritOrchestrator:
             self._cancel_pending_limit(pair, pending, reason='expired')
             return
 
-        # Check fill status
-        if self.mode == 'paper':
-            fill_status = self.order_executor.check_limit_fill(pending.txid, candle)
-        else:
-            fill_status = self.order_executor.check_order_status(pending.txid)
-
-        status = fill_status.get('status', 'unknown')
-
-        if status == 'closed':
-            # Filled — transition to open trade
-            self._on_limit_filled(pair, pending, fill_status)
-        elif status in ('canceled', 'expired'):
-            # Exchange cancelled the order
-            self.pending_orders.remove(pair)
-            self._cb_logger.info(
-                f"[{pair}][LIMIT_CANCEL] Exchange {status}: txid={pending.txid}"
+        # Periodic diagnostic: log every 10 minutes while pending
+        if int(pending.age_minutes) % 10 == 0 and int(pending.age_minutes) > 0:
+            self._cb_logger.debug(
+                f"[{pair}][LIMIT_PENDING] age={pending.age_minutes:.0f}m "
+                f"candle_low={candle_low} limit={pending.limit_price} "
+                f"gap={candle_low - pending.limit_price:.4f}"
             )
 
     def _on_limit_filled(self, pair, pending, fill_status):
@@ -918,7 +952,12 @@ class SpiritOrchestrator:
         # Rebuild TradeRecord from signal context
         tr_dict = pending.signal_context.get('trade_record_dict', {})
         trade_record = self._build_trade_record(tr_dict)
+        pre_finalize_price = getattr(trade_record, 'entry_price', None) if trade_record else None
         if trade_record is None:
+            self._cb_logger.warning(
+                f"[{pair}][LIMIT_FILLED] _build_trade_record returned None, "
+                f"using fallback with limit_price={pending.limit_price}"
+            )
             trade_record = TradeRecord(
                 entry_price=pending.limit_price,
                 symbol=pair,
@@ -931,7 +970,8 @@ class SpiritOrchestrator:
 
         self._cb_logger.info(
             f"[{pair}][LIMIT_FILLED] txid={pending.txid} "
-            f"fill={trade_record.entry_price} zone_id={pending.zone_id} "
+            f"pre_finalize={pre_finalize_price} post_finalize={trade_record.entry_price} "
+            f"limit={pending.limit_price} zone_id={pending.zone_id} "
             f"age={pending.age_minutes:.1f}m"
         )
 
