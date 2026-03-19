@@ -159,10 +159,22 @@ class SpiritOrchestrator:
         if self.data_source and not getattr(self.data_source, 'warmup_complete', True):
             return
 
-        # Dedup: skip 60m evaluation if predictive limit is pending
+        # Dedup: skip 60m evaluation if limit is pending — but still check limit lifecycle
         if self.pending_orders.has_pending(pair):
-            self._cb_logger.info(f"[{pair}][EVAL] SKIP — predictive limit pending")
-            return
+            # Build candle dict from latest 60m row for fill/expiry checks
+            try:
+                from spirit.utils.db_utils import set_active_pair, get_spirit_temp_ti
+                set_active_pair(pair)
+                _df = get_spirit_temp_ti(db_path=None)
+                if _df is not None and not _df.empty:
+                    _row = _df.iloc[-1]
+                    _candle = _row.to_dict() if hasattr(_row, 'to_dict') else dict(_row)
+                    self._check_pending_limit(pair, _candle)
+            except Exception as e:
+                self._cb_logger.debug(f"[{pair}] 60m pending check error: {e}")
+            if self.pending_orders.has_pending(pair):
+                self._cb_logger.info(f"[{pair}][EVAL] SKIP — predictive limit pending")
+                return
 
         ctx = self.context_manager.get(pair)
         tsm = self.trade_state_manager.get(pair)
@@ -846,7 +858,7 @@ class SpiritOrchestrator:
                 source = 'predictive'
             else:
                 ttl_minutes = self.limit_order_ttl
-                ttl_bars = 0  # time-based only
+                ttl_bars = ttl_minutes  # 1 bar = 1 minute; ensures expiry works in replay mode
                 source = 'confirmed'
 
             pending = PendingLimitOrder(
@@ -884,9 +896,8 @@ class SpiritOrchestrator:
         if pending is None:
             return
 
-        # Increment bar counter (for bar-based TTL used by predictive entries)
-        if pending.ttl_bars > 0:
-            pending.tick_bar()
+        # Increment bar counter (tracks 1m ticks — used for TTL, thesis checks, missed bounce)
+        pending.tick_bar()
 
         # --- Fill check FIRST (before expiry) ---
         # A candle that arrives on the same tick as TTL should still fill (#181)
@@ -913,6 +924,47 @@ class SpiritOrchestrator:
                 f"[{pair}][LIMIT_CANCEL] Exchange {status}: txid={pending.txid}"
             )
             return
+
+        # --- Missed bounce cancel (price moved too far above zone) ---
+        candle_close = float(candle.get('close', 0)) if candle else 0
+        missed_bounce_pct = float(get_config('PREDICTIVE_MISSED_BOUNCE_PCT', '2.0'))
+        if candle_close > 0 and pending.limit_price > 0:
+            gap_pct = (candle_close - pending.limit_price) / pending.limit_price * 100
+            if gap_pct > missed_bounce_pct:
+                self._cb_logger.info(
+                    f"[{pair}][LIMIT_MISSED_BOUNCE] close={candle_close:.2f} "
+                    f"limit={pending.limit_price:.2f} gap={gap_pct:.1f}% > {missed_bounce_pct}%"
+                )
+                strategy = self.strategies.get(pair)
+                if strategy and hasattr(strategy, 'on_limit_expired'):
+                    try:
+                        strategy.on_limit_expired(pair, pending.zone_id)
+                    except Exception as e:
+                        self._cb_logger.debug(f"[{pair}] on_limit_expired error: {e}")
+                self._cancel_pending_limit(pair, pending, reason='missed_bounce')
+                return
+
+        # --- Thesis health check (every 15 ticks while pending) ---
+        if pending.bars_elapsed > 0 and pending.bars_elapsed % 15 == 0:
+            strategy = self.strategies.get(pair)
+            if strategy and hasattr(strategy, 'check_pending_thesis_health'):
+                try:
+                    health = strategy.check_pending_thesis_health(
+                        pair, candle, pending.bars_elapsed)
+                    if health and health.get('action') == 'EXIT_EARLY':
+                        self._cb_logger.info(
+                            f"[{pair}][LIMIT_THESIS_DEGRADED] {health.get('reason', '')} "
+                            f"health={health.get('health_score', '?')} bar={pending.bars_elapsed}"
+                        )
+                        if hasattr(strategy, 'on_limit_expired'):
+                            try:
+                                strategy.on_limit_expired(pair, pending.zone_id)
+                            except Exception:
+                                pass
+                        self._cancel_pending_limit(pair, pending, reason='thesis_degraded')
+                        return
+                except Exception as e:
+                    self._cb_logger.debug(f"[{pair}] check_pending_thesis_health error: {e}")
 
         # --- Expiry check (after fill check) ---
         if pending.is_expired:
