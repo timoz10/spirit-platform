@@ -159,6 +159,13 @@ class SpiritOrchestrator:
         if self.data_source and not getattr(self.data_source, 'warmup_complete', True):
             return
 
+        ctx = self.context_manager.get(pair)
+
+        # Periodic state save — before any early returns so pairs with pending
+        # limits still persist startup_config and paper_equity (#193)
+        if ctx.health['candles_processed'] % 10 == 0:
+            ctx.save_state()
+
         # Dedup: skip 60m evaluation if limit is pending — but still check limit lifecycle
         if self.pending_orders.has_pending(pair):
             # Build candle dict from latest 60m row for fill/expiry checks
@@ -175,8 +182,6 @@ class SpiritOrchestrator:
             if self.pending_orders.has_pending(pair):
                 self._cb_logger.info(f"[{pair}][EVAL] SKIP — predictive limit pending")
                 return
-
-        ctx = self.context_manager.get(pair)
         tsm = self.trade_state_manager.get(pair)
         strategy = self.strategies.get(pair)
         if not strategy:
@@ -293,9 +298,6 @@ class SpiritOrchestrator:
             if exit_flag and trade_record is not None and tsm.open_trade is not None:
                 self._process_exit(pair, trade_record)
 
-            # Periodic state save (every 10 candles)
-            if ctx.health['candles_processed'] % 10 == 0:
-                ctx.save_state()
         except Exception as e:
             self._cb_logger.exception(f"[{pair}] Exception in _evaluate_pair: {e}")
             ctx.health['errors'] += 1
