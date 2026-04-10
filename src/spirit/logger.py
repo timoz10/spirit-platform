@@ -13,9 +13,36 @@ import json
 import logging
 import sys
 import os
+import yaml as _yaml
 from spirit.config import LOGGING_LEVEL, LOG_FILE
 
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+def _resolve_instance() -> str:
+    """Read SPIRIT_INSTANCE from env or YAML without importing config_loader.
+
+    This avoids a circular import: spirit.config -> spirit.logger -> spirit.config.
+    Mirrors the env -> YAML -> default resolution of config_loader.get_config().
+    """
+    val = os.environ.get('SPIRIT_INSTANCE')
+    if val:
+        return val
+    for candidate in [
+        os.path.join(os.path.dirname(__file__), 'config', 'spirit.yaml'),
+        os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'spirit.yaml'),
+    ]:
+        try:
+            with open(os.path.normpath(candidate)) as f:
+                conf = _yaml.safe_load(f) or {}
+                if conf.get('SPIRIT_INSTANCE'):
+                    return str(conf['SPIRIT_INSTANCE'])
+        except FileNotFoundError:
+            continue
+    return 'prod'
+
+
+_INSTANCE = _resolve_instance()
+
+LOG_FORMAT = f"%(asctime)s [{_INSTANCE}] [%(levelname)s] %(name)s: %(message)s"
 LOG_FILE = LOG_FILE
 
 # Map string level to logging constant
@@ -41,6 +68,7 @@ class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_entry = {
             'ts': self.formatTime(record),
+            'instance': _INSTANCE,
             'level': record.levelname,
             'logger': record.name,
             'msg': record.getMessage(),
