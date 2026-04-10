@@ -5,6 +5,9 @@ Reads from the `pair_registry` table in PostgreSQL. All consumers
 (Spirit, pipeline daemons, cron scripts) should use get_active_pairs()
 instead of hardcoded lists or config values.
 
+Multi-instance support (#225): When `instance` is passed, only pairs with
+matching instance OR NULL instance (shared) are returned.
+
 Upstream Dependencies: None (reads directly from pair_registry table)
 Outputs: List of active pair strings, e.g. ['ATOMUSD', 'ETHUSD', ...]
 """
@@ -12,22 +15,46 @@ Outputs: List of active pair strings, e.g. ['ATOMUSD', 'ETHUSD', ...]
 import logging
 import threading
 import time
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Thread-safe cache
+# Thread-safe cache — keyed by instance name for multi-instance isolation
 _cache_lock = threading.Lock()
-_cached_pairs: List[str] = []
-_cache_timestamp: float = 0.0
+_cached_pairs: Dict[Optional[str], List[str]] = {}
+_cache_timestamps: Dict[Optional[str], float] = {}
+
+# Cache for instance column existence check (one-time per process)
+_instance_column_checked: Optional[bool] = None
 
 
-def get_active_pairs(cache_ttl: int = 300) -> List[str]:
+def _has_instance_column() -> bool:
+    """Check if pair_registry has the 'instance' column (migration 023)."""
+    global _instance_column_checked
+    if _instance_column_checked is not None:
+        return _instance_column_checked
+    try:
+        from spirit.utils.db_connection import execute_query
+        row = execute_query(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'pair_registry' AND column_name = 'instance'",
+            fetch='one',
+        )
+        _instance_column_checked = row is not None
+    except Exception:
+        _instance_column_checked = False
+    return _instance_column_checked
+
+
+def get_active_pairs(cache_ttl: int = 300, instance: Optional[str] = None) -> List[str]:
     """
     Return active trading pairs from pair_registry table.
 
     Args:
         cache_ttl: Cache lifetime in seconds (default 5 minutes).
+        instance: Spirit instance name (e.g. 'prod', 'davy'). When set,
+                  returns pairs where instance IS NULL (shared) OR matches.
+                  When None, returns all active pairs (backward compat for crons).
 
     Returns:
         Sorted list of active pair strings (e.g. ['ATOMUSD', 'ETHUSD', ...]).
@@ -36,20 +63,28 @@ def get_active_pairs(cache_ttl: int = 300) -> List[str]:
         RuntimeError: If the registry returns no active pairs.
         Exception: DB connection errors propagate (fail loudly).
     """
-    global _cached_pairs, _cache_timestamp
-
     now = time.monotonic()
 
     with _cache_lock:
-        if _cached_pairs and (now - _cache_timestamp) < cache_ttl:
-            return list(_cached_pairs)
+        cached = _cached_pairs.get(instance)
+        ts = _cache_timestamps.get(instance, 0.0)
+        if cached and (now - ts) < cache_ttl:
+            return list(cached)
 
     # Query outside the lock to avoid holding it during I/O
     from spirit.utils.db_connection import execute_query
 
-    rows = execute_query(
-        "SELECT pair FROM pair_registry WHERE active = true ORDER BY pair"
-    )
+    if instance and _has_instance_column():
+        rows = execute_query(
+            "SELECT pair FROM pair_registry "
+            "WHERE active = true AND (instance IS NULL OR instance = %s) "
+            "ORDER BY pair",
+            (instance,),
+        )
+    else:
+        rows = execute_query(
+            "SELECT pair FROM pair_registry WHERE active = true ORDER BY pair"
+        )
 
     pairs = [row['pair'] for row in rows] if rows else []
 
@@ -60,17 +95,15 @@ def get_active_pairs(cache_ttl: int = 300) -> List[str]:
         )
 
     with _cache_lock:
-        _cached_pairs = pairs
-        _cache_timestamp = time.monotonic()
+        _cached_pairs[instance] = pairs
+        _cache_timestamps[instance] = time.monotonic()
 
-    logger.debug(f"[PAIR_REGISTRY] Loaded {len(pairs)} active pairs: {pairs}")
+    logger.debug(f"[PAIR_REGISTRY] Loaded {len(pairs)} active pairs (instance={instance}): {pairs}")
     return list(pairs)
 
 
 def invalidate_cache() -> None:
     """Clear the cached pairs, forcing a fresh DB query on next call."""
-    global _cached_pairs, _cache_timestamp
-
     with _cache_lock:
-        _cached_pairs = []
-        _cache_timestamp = 0.0
+        _cached_pairs.clear()
+        _cache_timestamps.clear()
