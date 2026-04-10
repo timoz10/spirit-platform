@@ -97,6 +97,7 @@ class SpiritOrchestrator:
         self.run_id = run_id                         # 'live' or UUID for replay
         self.data_source = None  # set after data source creation
         self.csv_thread = None
+        self._instance = get_config('SPIRIT_INSTANCE', 'prod')
 
         # Pending limit order manager
         self.pending_orders = PendingOrderManager()
@@ -166,6 +167,17 @@ class SpiritOrchestrator:
         # limits still persist startup_config and paper_equity (#193)
         if ctx.health['candles_processed'] % 10 == 0:
             ctx.save_state()
+            # Heartbeat piggybacks on existing periodic save (every 10 candles)
+            if self.run_id == 'live':
+                try:
+                    from spirit.pipeline.daemon_health import record_heartbeat
+                    record_heartbeat(f'spirit:{self._instance}', status='ok', metadata={
+                        'pairs_active': len(self.pairs),
+                        'pair': pair,
+                        'candles': ctx.health['candles_processed'],
+                    })
+                except Exception:
+                    pass
 
         # Dedup: skip 60m evaluation if limit is pending — but still check limit lifecycle
         if self.pending_orders.has_pending(pair):
@@ -1118,31 +1130,48 @@ def main():
         ).decode().strip()
     except Exception:
         git_hash = 'unknown'
+    instance = get_config('SPIRIT_INSTANCE', 'prod')
     strategy_name = get_config('SPIRIT_STRATEGY', 'none')
     mode_label = 'replay' if '--replay' in sys.argv else get_config('SPIRIT_MODE', 'paper')
     logger.info(
-        f"Spirit v={__version__} ({git_hash}) strategy={strategy_name} mode={mode_label}"
+        f"Spirit v={__version__} ({git_hash}) instance={instance} strategy={strategy_name} mode={mode_label}"
     )
 
     # Stamp version into spirit_state for PG-queryable deployment verification (#249)
+    # Keys are instance-scoped to avoid collisions in multi-instance deployments (#225)
     if mode_label != 'replay':
         try:
             from spirit.utils.db_connection import execute_query
             from datetime import datetime, timezone
             started_at = datetime.now(timezone.utc).isoformat()
             for key, value in [
-                ('version:arch', __version__),
-                ('version:git_sha', git_hash),
-                ('version:started_at', started_at),
+                (f'version:{instance}:arch', __version__),
+                (f'version:{instance}:git_sha', git_hash),
+                (f'version:{instance}:started_at', started_at),
             ]:
                 execute_query("""
                     INSERT INTO spirit_state (key, value, updated_at)
                     VALUES (%s, %s::jsonb, NOW())
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                 """, (key, json.dumps(value)), fetch='none')
-            logger.info(f"[VERSION] Stamped v={__version__} sha={git_hash} to spirit_state")
+            logger.info(f"[VERSION] Stamped v={__version__} sha={git_hash} instance={instance} to spirit_state")
         except Exception as e:
             logger.warning(f"[VERSION] Failed to stamp version to spirit_state: {e}")
+
+    # Record startup heartbeat for daemon health monitoring (#225)
+    if mode_label != 'replay':
+        try:
+            from spirit.pipeline.daemon_health import record_heartbeat
+            ok = record_heartbeat(f'spirit:{instance}', status='starting', metadata={
+                'version': __version__,
+                'git_sha': git_hash,
+                'strategy': strategy_name,
+                'mode': mode_label,
+            })
+            if ok:
+                logger.info(f"[HEARTBEAT] Registered spirit:{instance} (starting)")
+        except Exception as e:
+            logger.debug(f"[HEARTBEAT] Startup heartbeat failed: {e}")
 
     # Start web dashboard if enabled
     if get_config('SPIRIT_WEB', '').lower() in ('1', 'true', 'yes'):
@@ -1241,8 +1270,8 @@ def main():
         logger.info(f"Pairs from env override: {pairs}")
     else:
         from spirit.utils.pair_registry import get_active_pairs
-        pairs = get_active_pairs()
-        logger.info(f"Pairs from registry: {pairs}")
+        pairs = get_active_pairs(instance=instance)
+        logger.info(f"Pairs from registry (instance={instance}): {pairs}")
 
     # Create a probe strategy to read DataRequirements (cheap — no cache loading)
     probe_strategy = get_strategy()
