@@ -1477,8 +1477,82 @@ def main():
                     except Exception as e:
                         logger.debug(f"[PIPELINE] on_pipeline_event error: {e}")
 
+            # Wire pipeline_bounce_physics NOTIFY → hot-reload all live
+            # BounceReferenceStore instances. Full mode does reload_all(),
+            # incremental mode does reload_incremental(watermark) using the
+            # watermark carried in event.metadata. The calibrator emits this
+            # event after every successful run (including no-op heartbeats).
+            def _on_bounce_physics_event(event):
+                try:
+                    from spirit.tumblers.bounce_reference import get_active_stores
+                except Exception as e:
+                    logger.warning(
+                        f"[BOUNCE_REF_RELOAD] Failed to import get_active_stores: {e}"
+                    )
+                    return
+
+                stores = get_active_stores()
+                metadata = getattr(event, 'metadata', {}) or {}
+                mode = metadata.get('mode', 'full')
+                watermark_iso = metadata.get('watermark')
+                n_new = metadata.get('n_new', 0)
+
+                logger.info(
+                    f"[BOUNCE_REF_RELOAD] event received: mode={mode} "
+                    f"n_new={n_new} watermark={watermark_iso} "
+                    f"n_stores={len(stores)}"
+                )
+
+                if not stores:
+                    logger.info(
+                        "[BOUNCE_REF_RELOAD] no live stores in this process — "
+                        "nothing to reload"
+                    )
+                    return
+
+                # Heartbeat emission (n_new=0 incremental) — log and skip
+                # the actual reload to avoid pointless PG queries.
+                if mode == 'incremental' and n_new == 0:
+                    logger.info(
+                        "[BOUNCE_REF_RELOAD] heartbeat (no new bounces) — "
+                        "skipping reload"
+                    )
+                    return
+
+                # Parse watermark for incremental, fall back to full if missing
+                watermark = None
+                if mode == 'incremental' and watermark_iso:
+                    try:
+                        from datetime import datetime as _dt
+                        watermark = _dt.fromisoformat(watermark_iso)
+                    except Exception as e:
+                        logger.warning(
+                            f"[BOUNCE_REF_RELOAD] bad watermark {watermark_iso!r}, "
+                            f"falling back to reload_all: {e}"
+                        )
+                        mode = 'full'
+
+                for store in stores:
+                    try:
+                        if mode == 'incremental' and watermark is not None:
+                            n_added = store.reload_incremental(watermark)
+                            logger.info(
+                                f"[BOUNCE_REF_RELOAD] incremental: +{n_added} refs"
+                            )
+                        else:
+                            store.reload_all()
+                            logger.info(
+                                f"[BOUNCE_REF_RELOAD] full reload: "
+                                f"{store.total_refs} refs total"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"[BOUNCE_REF_RELOAD] reload failed: {e}"
+                        )
+
             event_bus.subscribe('pipeline_dlimit_60m', _on_dlimit_event)
             event_bus.subscribe('pipeline_dlimit_15m', _on_dlimit_event)
+            event_bus.subscribe('pipeline_bounce_physics', _on_bounce_physics_event)
             event_bus.start()
             logger.info(
                 f"[PIPELINE] Event bus active: mode=pg, "
