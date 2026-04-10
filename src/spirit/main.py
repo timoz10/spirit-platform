@@ -10,6 +10,7 @@ instance, and TradeStateManager. Equity is shared via the order executor.
 """
 
 import faulthandler; faulthandler.enable()
+import json
 import os
 import sys
 import time
@@ -1106,7 +1107,8 @@ def main():
         raise SystemExit(1)
     logger.info("Pre-flight checks passed.")
 
-    # Log version and active configuration for prod traceability (#25)
+    # Log version and active configuration for prod traceability (#25, #249)
+    from spirit import __version__
     import subprocess
     try:
         git_hash = subprocess.check_output(
@@ -1119,8 +1121,28 @@ def main():
     strategy_name = get_config('SPIRIT_STRATEGY', 'none')
     mode_label = 'replay' if '--replay' in sys.argv else get_config('SPIRIT_MODE', 'paper')
     logger.info(
-        f"Spirit v={git_hash} strategy={strategy_name} mode={mode_label}"
+        f"Spirit v={__version__} ({git_hash}) strategy={strategy_name} mode={mode_label}"
     )
+
+    # Stamp version into spirit_state for PG-queryable deployment verification (#249)
+    if mode_label != 'replay':
+        try:
+            from spirit.utils.db_connection import execute_query
+            from datetime import datetime, timezone
+            started_at = datetime.now(timezone.utc).isoformat()
+            for key, value in [
+                ('version:arch', __version__),
+                ('version:git_sha', git_hash),
+                ('version:started_at', started_at),
+            ]:
+                execute_query("""
+                    INSERT INTO spirit_state (key, value, updated_at)
+                    VALUES (%s, %s::jsonb, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                """, (key, json.dumps(value)), fetch='none')
+            logger.info(f"[VERSION] Stamped v={__version__} sha={git_hash} to spirit_state")
+        except Exception as e:
+            logger.warning(f"[VERSION] Failed to stamp version to spirit_state: {e}")
 
     # Start web dashboard if enabled
     if get_config('SPIRIT_WEB', '').lower() in ('1', 'true', 'yes'):
