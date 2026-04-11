@@ -120,6 +120,26 @@ class SpiritOrchestrator:
     # Multi-pair entry point: (pair, interval, window)
     # -----------------------------------------------------------------
 
+    def _heartbeat_tick(self, pair, ctx):
+        """Write an 'ok' heartbeat on a periodic cadence.
+
+        Called from on_pair_candle so that every routing path (legacy and
+        Spine registry) keeps spirit:{instance} fresh in daemon_heartbeats.
+        """
+        if self.run_id != 'live':
+            return
+        if ctx.health['candles_processed'] % 10 != 0:
+            return
+        try:
+            from spirit.pipeline.daemon_health import record_heartbeat
+            record_heartbeat(f'spirit:{self._instance}', status='ok', metadata={
+                'pairs_active': len(self.pairs),
+                'pair': pair,
+                'candles': ctx.health['candles_processed'],
+            })
+        except Exception:
+            pass
+
     def on_pair_candle(self, pair, interval_val, window_df, is_csv=False):
         """Multi-pair callback: routes (pair, interval, window) to the right context."""
         try:
@@ -132,6 +152,10 @@ class SpiritOrchestrator:
                 latest = records[-1]
                 candle_dict = latest.__dict__.copy() if hasattr(latest, '__dict__') else dict(latest)
                 ctx.append_candle(candle_dict, interval=iv)
+
+            # Heartbeat on signal-interval candles only (avoid 1m spam)
+            if iv == int(self.interval):
+                self._heartbeat_tick(pair, ctx)
 
             # Registry-based routing (Spine multi-strategy)
             if self.registry is not None:
@@ -167,17 +191,6 @@ class SpiritOrchestrator:
         # limits still persist startup_config and paper_equity (#193)
         if ctx.health['candles_processed'] % 10 == 0:
             ctx.save_state()
-            # Heartbeat piggybacks on existing periodic save (every 10 candles)
-            if self.run_id == 'live':
-                try:
-                    from spirit.pipeline.daemon_health import record_heartbeat
-                    record_heartbeat(f'spirit:{self._instance}', status='ok', metadata={
-                        'pairs_active': len(self.pairs),
-                        'pair': pair,
-                        'candles': ctx.health['candles_processed'],
-                    })
-                except Exception:
-                    pass
 
         # Dedup: skip 60m evaluation if limit is pending — but still check limit lifecycle
         if self.pending_orders.has_pending(pair):
