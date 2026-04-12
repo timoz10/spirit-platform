@@ -132,11 +132,21 @@ class SpiritOrchestrator:
             return
         try:
             from spirit.pipeline.daemon_health import record_heartbeat
-            record_heartbeat(f'spirit:{self._instance}', status='ok', metadata={
+            metadata = {
                 'pairs_active': len(self.pairs),
                 'pair': pair,
                 'candles': ctx.health['candles_processed'],
-            })
+            }
+            # Expose composite threshold calibrator health
+            for strat in self.strategies.values():
+                if hasattr(strat, '_composite_calibrator') and strat._composite_calibrator:
+                    cal = strat._composite_calibrator
+                    metadata['composite_cal_age_h'] = round(
+                        cal.hours_since_calibration(), 1)
+                    metadata['composite_cal_healthy'] = cal.health_check().get(
+                        'healthy', False)
+                    break  # all pairs share the same calibrator
+            record_heartbeat(f'spirit:{self._instance}', status='ok', metadata=metadata)
         except Exception:
             pass
 
