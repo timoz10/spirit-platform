@@ -24,6 +24,7 @@ def record_heartbeat(
     status: str = 'ok',
     metadata: Optional[Dict[str, Any]] = None,
     run_id: str = 'live',
+    instance: str = 'prod',
 ) -> bool:
     """UPSERT a heartbeat row for this daemon.
 
@@ -33,6 +34,8 @@ def record_heartbeat(
         metadata: Optional JSON-serializable dict (zones_count, last_candle, etc.)
         run_id: Only 'live' writes to the table — test/validate/replay are skipped
                 to prevent dev runs from overwriting production heartbeats.
+        instance: Spirit instance name (e.g. 'prod', 'davy'). Part of the
+                  composite PK so different instances can't overwrite each other.
 
     Returns:
         True if write succeeded (or skipped for non-live), False otherwise.
@@ -44,15 +47,16 @@ def record_heartbeat(
         from spirit.utils.db_connection import execute_query
         execute_query(
             """
-            INSERT INTO daemon_heartbeats (daemon_id, last_heartbeat, status, metadata)
-            VALUES (%s, NOW(), %s, %s)
-            ON CONFLICT (daemon_id) DO UPDATE SET
+            INSERT INTO daemon_heartbeats (daemon_id, instance, last_heartbeat, status, metadata)
+            VALUES (%s, %s, NOW(), %s, %s)
+            ON CONFLICT (daemon_id, instance) DO UPDATE SET
                 last_heartbeat = NOW(),
                 status = EXCLUDED.status,
                 metadata = EXCLUDED.metadata
             """,
             (
                 daemon_id,
+                instance,
                 status,
                 json.dumps(metadata) if metadata else None,
             ),
