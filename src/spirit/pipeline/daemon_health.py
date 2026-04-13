@@ -23,6 +23,7 @@ def record_heartbeat(
     daemon_id: str,
     status: str = 'ok',
     metadata: Optional[Dict[str, Any]] = None,
+    run_id: str = 'live',
 ) -> bool:
     """UPSERT a heartbeat row for this daemon.
 
@@ -30,10 +31,15 @@ def record_heartbeat(
         daemon_id: Unique daemon identifier (e.g. 'ohlc', 'dlimit60-XBTUSD')
         status: 'ok', 'error', or 'starting'
         metadata: Optional JSON-serializable dict (zones_count, last_candle, etc.)
+        run_id: Only 'live' writes to the table — test/validate/replay are skipped
+                to prevent dev runs from overwriting production heartbeats.
 
     Returns:
-        True if write succeeded, False otherwise.
+        True if write succeeded (or skipped for non-live), False otherwise.
     """
+    if run_id != 'live':
+        return True  # silently skip — dev/test must not touch prod heartbeats
+
     try:
         from spirit.utils.db_connection import execute_query
         execute_query(
