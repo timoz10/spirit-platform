@@ -1348,10 +1348,9 @@ def main():
         )
         env_interval = int(KRAKEN_OHLC_INTERVAL)
         if env_interval != requirements.signal_interval:
-            logger.warning(
-                f"[HANDSHAKE] KRAKEN_OHLC_INTERVAL={env_interval} but strategy declares "
-                f"signal_interval={requirements.signal_interval}. "
-                f"Strategy's signal_interval will be used."
+            logger.info(
+                f"[HANDSHAKE] KRAKEN_OHLC_INTERVAL={env_interval} overridden by strategy "
+                f"signal_interval={requirements.signal_interval} (expected when strategy is active)"
             )
 
     # ---------------------------------------------------------------
