@@ -146,7 +146,25 @@ class SpiritOrchestrator:
                     metadata['composite_cal_healthy'] = cal.health_check().get(
                         'healthy', False)
                     break  # all pairs share the same calibrator
-            record_heartbeat(f'spirit:{self._instance}', status='ok', metadata=metadata)
+            # Expose scene pipeline stats (tumbler_scenes writes)
+            for strat in self.strategies.values():
+                if hasattr(strat, '_scene_stats'):
+                    ss = strat._scene_stats
+                    metadata['scenes_collected'] = ss['collected']
+                    metadata['scenes_pg_ok'] = ss['pg_ok']
+                    metadata['scenes_pg_fail'] = ss['pg_fail']
+                    metadata['scenes_last_ok_dt'] = ss['last_ok_dt']
+                # Expose funnel totals (summed across pairs) for bounce visibility
+                if hasattr(strat, '_eval_funnel'):
+                    totals = {}
+                    for _pf in strat._eval_funnel.values():
+                        for k in ('ticks_1m', 'bounces_1m', 'bounces_detected',
+                                  'scored_1m', 'entries_1m'):
+                            totals[k] = totals.get(k, 0) + _pf.get(k, 0)
+                    metadata['funnel'] = totals
+                    break
+            record_heartbeat(f'spirit:{self._instance}', status='ok', metadata=metadata,
+                            run_id=self.run_id)
         except Exception:
             pass
 
@@ -1190,7 +1208,7 @@ def main():
                 'git_sha': git_hash,
                 'strategy': strategy_name,
                 'mode': mode_label,
-            })
+            }, run_id=run_id)
             if ok:
                 logger.info(f"[HEARTBEAT] Registered spirit:{instance} (starting)")
         except Exception as e:
