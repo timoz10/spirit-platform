@@ -24,19 +24,36 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
-def _parse_numeric(val):
-    """Convert string-encoded Decimals back to float."""
-    if isinstance(val, str):
+def _looks_like_iso_datetime(s: str) -> bool:
+    # YYYY-MM-DD... length 10 minimum, 'T' or space separator at position 10.
+    return len(s) >= 19 and s[4] == "-" and s[7] == "-" and s[10] in ("T", " ")
+
+
+def _parse_value(val):
+    """Convert API response value to match psycopg2 RealDictCursor output.
+
+    - ISO timestamp strings → tz-aware datetime (matches PG TIMESTAMPTZ)
+    - Numeric strings → float (matches PG NUMERIC cast)
+    - Everything else unchanged
+    """
+    if not isinstance(val, str):
+        return val
+
+    if _looks_like_iso_datetime(val):
         try:
-            return float(val)
-        except (ValueError, TypeError):
-            return val
-    return val
+            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return val
 
 
 def _normalise_row(row: dict) -> dict:
-    """Convert API response row: string Decimals → float."""
-    return {k: _parse_numeric(v) for k, v in row.items()}
+    """Match PG row shape: parse ISO timestamps → datetime, numerics → float."""
+    return {k: _parse_value(v) for k, v in row.items()}
 
 
 class ApiDataProvider:
