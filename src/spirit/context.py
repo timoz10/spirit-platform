@@ -323,26 +323,16 @@ class SpiritContext:
     def _ensure_pg_table(self):
         """Verify spirit_state table exists, creating it only if needed."""
         try:
-            from spirit.utils.db_connection import execute_query
-            # Check existence first (works with read-only perms)
-            row = execute_query(
-                "SELECT 1 FROM information_schema.tables "
-                "WHERE table_name = 'spirit_state' "
-                "AND table_schema = ANY(string_to_array(current_setting('search_path'), ', '))",
-                fetch='one',
-            )
-            if row:
-                logger.debug("[CONTEXT] spirit_state table exists")
-                return
-            # Table doesn't exist — try to create it
-            execute_query("""
+            from spirit.utils.data_provider import get_data_provider
+            ok = get_data_provider().ensure_table('spirit_state', """
                 CREATE TABLE IF NOT EXISTS spirit_state (
                     key TEXT PRIMARY KEY,
                     value JSONB NOT NULL,
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 )
-            """, fetch='none')
-            logger.info("[CONTEXT] spirit_state table created")
+            """)
+            if ok:
+                logger.debug("[CONTEXT] spirit_state table exists")
         except Exception as e:
             logger.warning(f"[CONTEXT] Failed to ensure spirit_state table: {e}")
             self.persist_to_pg = False
@@ -350,13 +340,8 @@ class SpiritContext:
     def _save_to_pg(self, key: str, value):
         """Save a key-value pair to spirit_state (upsert)."""
         try:
-            from spirit.utils.db_connection import execute_query
-            json_val = json.dumps(value, default=str)
-            execute_query("""
-                INSERT INTO spirit_state (key, value, updated_at)
-                VALUES (%s, %s::jsonb, NOW())
-                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-            """, (key, json_val), fetch='none')
+            from spirit.utils.data_provider import get_data_provider
+            get_data_provider().put_state(key, value)
         except Exception as e:
             logger.warning(f"[CONTEXT] Failed to save state '{key}' to PG: {e}")
             self.health['errors'] += 1
@@ -364,15 +349,8 @@ class SpiritContext:
     def _load_from_pg(self, key: str) -> Optional[Any]:
         """Load a value from spirit_state by key."""
         try:
-            from spirit.utils.db_connection import execute_query
-            row = execute_query(
-                "SELECT value FROM spirit_state WHERE key = %s",
-                (key,),
-                fetch='one',
-            )
-            if row:
-                return row['value']
-            return None
+            from spirit.utils.data_provider import get_data_provider
+            return get_data_provider().get_state(key)
         except Exception as e:
             logger.warning(f"[CONTEXT] Failed to load state '{key}' from PG: {e}")
             return None

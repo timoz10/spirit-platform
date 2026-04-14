@@ -44,23 +44,9 @@ def record_heartbeat(
         return True  # silently skip — dev/test must not touch prod heartbeats
 
     try:
-        from spirit.utils.db_connection import execute_query
-        execute_query(
-            """
-            INSERT INTO daemon_heartbeats (daemon_id, instance, last_heartbeat, status, metadata)
-            VALUES (%s, %s, NOW(), %s, %s)
-            ON CONFLICT (daemon_id, instance) DO UPDATE SET
-                last_heartbeat = NOW(),
-                status = EXCLUDED.status,
-                metadata = EXCLUDED.metadata
-            """,
-            (
-                daemon_id,
-                instance,
-                status,
-                json.dumps(metadata) if metadata else None,
-            ),
-            fetch='none',
+        from spirit.utils.data_provider import get_data_provider
+        get_data_provider().write_heartbeat(
+            daemon_id, status=status, metadata=metadata, run_id=run_id,
         )
         return True
     except Exception as e:

@@ -1182,19 +1182,16 @@ def main():
     # Keys are instance-scoped to avoid collisions in multi-instance deployments (#225)
     if mode_label != 'replay':
         try:
-            from spirit.utils.db_connection import execute_query
+            from spirit.utils.data_provider import get_data_provider
             from datetime import datetime, timezone
+            dp = get_data_provider()
             started_at = datetime.now(timezone.utc).isoformat()
             for key, value in [
                 (f'version:{instance}:arch', __version__),
                 (f'version:{instance}:git_sha', git_hash),
                 (f'version:{instance}:started_at', started_at),
             ]:
-                execute_query("""
-                    INSERT INTO spirit_state (key, value, updated_at)
-                    VALUES (%s, %s::jsonb, NOW())
-                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-                """, (key, json.dumps(value)), fetch='none')
+                dp.put_state(key, value)
             logger.info(f"[VERSION] Stamped v={__version__} sha={git_hash} instance={instance} to spirit_state")
         except Exception as e:
             logger.warning(f"[VERSION] Failed to stamp version to spirit_state: {e}")
