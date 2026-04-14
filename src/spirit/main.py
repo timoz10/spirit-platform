@@ -21,6 +21,7 @@ from spirit.logger import get_logger
 from spirit.config import KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL
 from spirit.utils.config_loader import get_config
 from spirit.utils.data_source import LiveDataSource, CsvDataSource
+from spirit.utils.decision_recorder import record_entry as _dump_entry, record_exit as _dump_exit
 
 # Optional multi-interval sources (may not exist on all branches)
 try:
@@ -294,6 +295,10 @@ class SpiritOrchestrator:
                     signal = details.get('signal')
                     if signal is not None:
                         risk_decision = self.risk_gate.evaluate(signal)
+                        try:
+                            _dump_entry(pair, getattr(signal, 'datetime', None), signal, risk_decision)
+                        except Exception:
+                            pass
                         # Record decision to audit trail
                         try:
                             writer = _get_risk_gate_writer()
@@ -756,6 +761,10 @@ class SpiritOrchestrator:
             signal = details.get('signal')
             if signal is not None:
                 risk_decision = self.risk_gate.evaluate(signal)
+                try:
+                    _dump_entry(pair, getattr(signal, 'datetime', None), signal, risk_decision)
+                except Exception:
+                    pass
                 # Record decision to audit trail
                 try:
                     writer = _get_risk_gate_writer()
@@ -836,6 +845,10 @@ class SpiritOrchestrator:
         exit_reason = getattr(trade_record, 'exit_reason', '') or ''
         exit_dt = getattr(trade_record, 'exit_datetime', None)
         net_pnl_pct = getattr(trade_record, 'pnl_pct', None)  # From executor (net, after fees)
+        try:
+            _dump_exit(pair, entry_datetime, exit_dt, entry_price, exit_price, exit_reason, net_pnl_pct)
+        except Exception:
+            pass
         if strategy and hasattr(strategy, 'on_exit_completed'):
             try:
                 strategy.on_exit_completed(pair, exit_reason, exit_price, entry_price,
