@@ -244,11 +244,14 @@ class ApiDataProvider:
     # Heartbeats
     # ==================================================================
 
-    def write_heartbeat(self, daemon_id, *, status="ok", metadata=None, run_id="live"):
+    def write_heartbeat(self, daemon_id, *, instance, status="ok", metadata=None, run_id="live"):
         if run_id != "live":
             return 0
+        # Gateway authoritatively overrides instance from the API key; we
+        # send it in the body for protocol parity with PgDataProvider.
         return self._post("/heartbeats", {
             "daemon_id": daemon_id, "status": status, "metadata": metadata,
+            "instance": instance,
         })
 
     # ==================================================================

@@ -21,6 +21,17 @@ from spirit.logger import get_logger
 logger = get_logger("preflight")
 
 
+# Canonical mapping: PostgreSQL role → expected SPIRIT_INSTANCE value.
+# Extend here when new instances are onboarded (Rule 7: schema isolation).
+PG_USER_TO_INSTANCE = {
+    "prod_25": "prod",
+    "davy_25": "davy",
+    # botuser is the shared dev/replay user; search_path = public.
+    # Permissive: botuser may run under instance 'dev' or any non-prod/davy name.
+    "botuser": "dev",
+}
+
+
 @dataclass
 class CheckResult:
     """Result of a single pre-flight check."""
@@ -196,6 +207,76 @@ def _check_ohlc_freshness() -> CheckResult:
         )
 
 
+def _check_instance_schema_match() -> CheckResult:
+    """Verify SPIRIT_INSTANCE matches the PG user we're actually connected as.
+
+    Fail-closed guard for multi-instance deployments (#277). A mismatch
+    means someone pointed Davy's instance at prod credentials (or vice
+    versa) and we would write to the wrong schema. This is FATAL.
+
+    Mapping lives in PG_USER_TO_INSTANCE. Unknown PG users fail the
+    check — add them to the map explicitly.
+    """
+    from spirit.utils.config_loader import get_config
+
+    declared = get_config('SPIRIT_INSTANCE', 'prod')
+
+    try:
+        from spirit.utils.db_connection import execute_query
+        row = execute_query("SELECT current_user AS u", fetch='one')
+        if not row:
+            return CheckResult(
+                name='instance_schema_match',
+                passed=False,
+                severity='FATAL',
+                message='Could not determine PG current_user',
+            )
+        pg_user = row['u'] if isinstance(row, dict) else row[0]
+    except Exception as e:
+        return CheckResult(
+            name='instance_schema_match',
+            passed=False,
+            severity='FATAL',
+            message='Failed to query current_user',
+            detail=str(e),
+        )
+
+    expected = PG_USER_TO_INSTANCE.get(pg_user)
+    if expected is None:
+        return CheckResult(
+            name='instance_schema_match',
+            passed=False,
+            severity='FATAL',
+            message=(
+                f"Unknown PG user '{pg_user}' — refusing to start. "
+                f"Add it to PG_USER_TO_INSTANCE in src/spirit/utils/preflight.py"
+            ),
+            detail=f"SPIRIT_INSTANCE={declared}",
+        )
+
+    if declared != expected:
+        return CheckResult(
+            name='instance_schema_match',
+            passed=False,
+            severity='FATAL',
+            message=(
+                f"SPIRIT_INSTANCE={declared} but connected as PG user "
+                f"'{pg_user}' (expected instance '{expected}') — refusing to start"
+            ),
+            detail=(
+                "Mismatch means writes would land in the wrong schema. "
+                "Fix SPIRIT_INSTANCE or POSTGRES_USER so they agree."
+            ),
+        )
+
+    return CheckResult(
+        name='instance_schema_match',
+        passed=True,
+        severity='FATAL',
+        message=f"SPIRIT_INSTANCE={declared} matches PG user '{pg_user}'",
+    )
+
+
 def _check_env_vars(skip_kraken: bool = False) -> CheckResult:
     """Verify required environment variables / config values are set."""
     from spirit.utils.config_loader import get_config
@@ -323,6 +404,7 @@ def run_preflight(skip_kraken: bool = False) -> PreflightResult:
     checks = [
         _check_env_vars(skip_kraken=skip_kraken),
         _check_pg_connectivity(),
+        _check_instance_schema_match(),
         _check_pg_tables(),
     ]
     if not skip_kraken:
