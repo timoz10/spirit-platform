@@ -222,11 +222,18 @@ class DataProvider(Protocol):
         self,
         daemon_id: str,
         *,
+        instance: str,
         status: str = "ok",
         metadata: dict | None = None,
         run_id: str = "live",
     ) -> int:
-        """Upsert a daemon heartbeat. Returns rows affected."""
+        """Upsert a daemon heartbeat. Returns rows affected.
+
+        instance is REQUIRED so pg-mode and api-mode land under the same
+        row per (daemon_id, instance). In api-mode the gateway overrides
+        from the API key; we still send the body field for protocol
+        consistency.
+        """
         ...
 
     # =================================================================

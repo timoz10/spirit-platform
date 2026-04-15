@@ -165,7 +165,7 @@ class SpiritOrchestrator:
                     metadata['funnel'] = totals
                     break
             record_heartbeat(f'spirit:{self._instance}', status='ok', metadata=metadata,
-                            run_id=self.run_id)
+                            run_id=self.run_id, instance=self._instance)
         except Exception:
             pass
 
@@ -1218,7 +1218,7 @@ def main():
                 'git_sha': git_hash,
                 'strategy': strategy_name,
                 'mode': mode_label,
-            }, run_id=run_id)
+            }, run_id=run_id, instance=instance)
             if ok:
                 logger.info(f"[HEARTBEAT] Registered spirit:{instance} (starting)")
         except Exception as e:
