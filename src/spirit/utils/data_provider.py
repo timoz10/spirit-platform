@@ -345,6 +345,16 @@ def get_data_provider() -> DataProvider:
         _provider = PgDataProvider()
         logger.info("DataProvider: pg (direct PostgreSQL)")
 
+    trace_path = get_config("SPIRIT_DATA_PROVIDER_TRACE", "")
+    if not trace_path:
+        import os as _os
+        trace_path = _os.environ.get("SPIRIT_DATA_PROVIDER_TRACE", "")
+    if trace_path:
+        from spirit.utils.coverage_recorder import CountingDataProvider
+
+        _provider = CountingDataProvider(_provider)
+        logger.info(f"DataProvider: counting wrapper enabled → {trace_path}")
+
     return _provider
 
 
