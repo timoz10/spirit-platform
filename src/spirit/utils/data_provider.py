@@ -316,6 +316,30 @@ class DataProvider(Protocol):
         """
         ...
 
+    # =================================================================
+    # Strategy metrics
+    # =================================================================
+
+    def get_strategy_metrics(
+        self,
+        strategy_name: str,
+        as_of_date: datetime,
+        *,
+        baseline_days: int = 90,
+        current_days: int = 14,
+        recent_days: int = 7,
+    ) -> dict:
+        """Per-strategy performance metrics + win-streak counts.
+
+        Computes trade count + win-rate over three lookback windows
+        (baseline/current/recent) plus consecutive-win/loss streaks from
+        strategy_performance. Returns a single dict with keys:
+        trades_14d, current_wr, trades_90d, baseline_wr, recent_wr,
+        consecutive_losses, consecutive_wins. Used by the dynamic
+        regime engine's baseline-vs-current scoring.
+        """
+        ...
+
 
 # =====================================================================
 # Singleton factory
