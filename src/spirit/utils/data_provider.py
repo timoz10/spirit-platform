@@ -301,6 +301,21 @@ class DataProvider(Protocol):
         """Fetch orderbook depth metrics."""
         ...
 
+    def get_orderbook_events_summary(
+        self,
+        pair: str,
+        *,
+        lookback_minutes: int = 15,
+        at: datetime | None = None,
+    ) -> list[dict]:
+        """Grouped orderbook_events counts over the lookback window.
+
+        Returns list of dicts with keys: event_type, side, count. The
+        caller aggregates event_type→summary field mapping — we keep the
+        provider a thin data-access layer.
+        """
+        ...
+
 
 # =====================================================================
 # Singleton factory
