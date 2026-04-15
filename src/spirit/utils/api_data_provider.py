@@ -300,3 +300,10 @@ class ApiDataProvider:
         return self._get("/orderbook", {
             "pair": pair, "start": _iso(start), "end": _iso(end), "limit": limit,
         })
+
+    def get_orderbook_events_summary(self, pair, *, lookback_minutes=15, at=None):
+        return self._get("/orderbook-events-summary", {
+            "pair": pair,
+            "lookback_minutes": lookback_minutes,
+            "at": _iso(at),
+        })
