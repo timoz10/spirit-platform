@@ -12,6 +12,7 @@ Non-fatal by design: if the DB write fails the daemon keeps running.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, Optional
 
 from spirit.logger import get_logger
@@ -24,7 +25,7 @@ def record_heartbeat(
     status: str = 'ok',
     metadata: Optional[Dict[str, Any]] = None,
     run_id: str = 'live',
-    instance: str = 'prod',
+    instance: Optional[str] = None,
 ) -> bool:
     """UPSERT a heartbeat row for this daemon.
 
@@ -43,10 +44,25 @@ def record_heartbeat(
     if run_id != 'live':
         return True  # silently skip — dev/test must not touch prod heartbeats
 
+    # Default to SPIRIT_INSTANCE from env/config so daemons on Davy's server
+    # don't silently overwrite prod heartbeats when instance is not passed.
+    if instance is None:
+        instance = os.environ.get('SPIRIT_INSTANCE')
+        if instance is None:
+            try:
+                from spirit.utils.config_loader import get_config
+                instance = get_config('SPIRIT_INSTANCE', 'prod')
+            except Exception:
+                instance = 'prod'
+
     try:
         from spirit.utils.data_provider import get_data_provider
         get_data_provider().write_heartbeat(
-            daemon_id, status=status, metadata=metadata, run_id=run_id,
+            daemon_id,
+            instance=instance,
+            status=status,
+            metadata=metadata,
+            run_id=run_id,
         )
         return True
     except Exception as e:
