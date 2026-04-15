@@ -340,6 +340,27 @@ class DataProvider(Protocol):
         """
         ...
 
+    # =================================================================
+    # Bounce references
+    # =================================================================
+
+    def get_bounce_references(
+        self,
+        *,
+        pair: str | None = None,
+        regime: str | None = None,
+        min_dt: datetime | None = None,
+    ) -> list[dict]:
+        """Fetch rows from bounce_reference with optional filters.
+
+        Returns list of dicts with keys: pair, regime, dt, zone_id,
+        signature_norm (JSONB), forward_mfe_pct, forward_mae_pct,
+        forward_pnl_12h_pct, forward_mfe_time_min, bounce_category,
+        is_winner_12h, forward_trajectory (JSONB). Used by the bounce
+        physics reference cache.
+        """
+        ...
+
 
 # =====================================================================
 # Singleton factory
