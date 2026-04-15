@@ -128,6 +128,17 @@ class ApiDataProvider:
             params["zone_ids"] = ",".join(str(z) for z in zone_ids)
         return self._get("/zone-touches", params)
 
+    def get_bounce_events(self, pair, interval, *, min_prior_touches=2,
+                          dedup_hours=0, start=None, limit=10000):
+        params = {
+            "pair": pair, "interval": interval,
+            "min_prior_touches": min_prior_touches,
+            "dedup_hours": dedup_hours,
+            "limit": limit,
+            "start": _iso(start),
+        }
+        return self._get("/bounce-events", params)
+
     # ==================================================================
     # D-Limit Indicators
     # ==================================================================

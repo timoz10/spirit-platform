@@ -80,6 +80,24 @@ class DataProvider(Protocol):
         """Fetch zone touch events."""
         ...
 
+    def get_bounce_events(
+        self,
+        pair: str,
+        interval: int,
+        *,
+        min_prior_touches: int = 2,
+        dedup_hours: int = 0,
+        start: datetime | None = None,
+        limit: int = 10000,
+    ) -> list[dict]:
+        """Deduped bounce events with per-zone LAG window function.
+
+        Returns list of dicts with keys: zone_id, touch_time, touch_price,
+        approach_direction, acted_as, price_level. Used by zone_bounce
+        strategy's entry-path cache — see #287.
+        """
+        ...
+
     # =================================================================
     # D-Limit Indicators
     # =================================================================
