@@ -225,14 +225,18 @@ class ApiDataProvider:
         return self._put("/risk-gate", data)
 
     def get_pending_shadow(self, *, limit=100):
-        # Pending shadow query not exposed via API yet
-        logger.debug("get_pending_shadow not available in API mode")
-        return []
+        return self._get("/shadow-outcomes/pending", {"limit": limit})
 
     def update_shadow_outcome(self, data):
-        # Shadow outcome update not exposed via API yet
-        logger.debug("update_shadow_outcome not available in API mode")
-        return 0
+        payload = {
+            "id": data["id"],
+            "shadow_hit_target": data["shadow_hit_target"],
+            "shadow_hit_stop": data["shadow_hit_stop"],
+            "shadow_max_favorable": data["shadow_max_favorable"],
+            "shadow_max_adverse": data["shadow_max_adverse"],
+            "shadow_bars_to_resolution": data["shadow_bars_to_resolution"],
+        }
+        return self._post("/shadow-outcomes", payload)
 
     # ==================================================================
     # Theses
