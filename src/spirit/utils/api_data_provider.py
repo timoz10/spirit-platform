@@ -307,3 +307,18 @@ class ApiDataProvider:
             "lookback_minutes": lookback_minutes,
             "at": _iso(at),
         })
+
+    def get_strategy_metrics(self, strategy_name, as_of_date, *,
+                              baseline_days=90, current_days=14, recent_days=7):
+        rows = self._get("/strategy-metrics", {
+            "strategy_name": strategy_name,
+            "as_of": _iso(as_of_date),
+            "baseline_days": baseline_days,
+            "current_days": current_days,
+            "recent_days": recent_days,
+        })
+        return rows[0] if rows else {
+            "trades_14d": 0, "current_wr": 0.5, "trades_90d": 0,
+            "baseline_wr": 0.5, "recent_wr": 0.5,
+            "consecutive_losses": 0, "consecutive_wins": 0,
+        }
