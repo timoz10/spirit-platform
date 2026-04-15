@@ -322,3 +322,10 @@ class ApiDataProvider:
             "baseline_wr": 0.5, "recent_wr": 0.5,
             "consecutive_losses": 0, "consecutive_wins": 0,
         }
+
+    def get_bounce_references(self, *, pair=None, regime=None, min_dt=None):
+        return self._get("/bounce-references", {
+            "pair": pair,
+            "regime": regime,
+            "min_dt": _iso(min_dt),
+        })
