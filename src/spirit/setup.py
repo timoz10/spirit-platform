@@ -120,7 +120,26 @@ def main():
             api_url = _prompt("Custom gateway URL")
         else:
             api_url = "https://api.tradebot.live/v1"
-        instance = _prompt("Instance name (e.g. prod, canary, davy)", "prod")
+        # Auto-detect instance name from API key
+        instance = None
+        if api_key:
+            try:
+                import urllib.request
+                import json
+                req = urllib.request.Request(
+                    f"{api_url}/whoami",
+                    headers={"X-API-Key": api_key},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                    instance = data.get("instance")
+                    key_name = data.get("name", "")
+                    print(f"  Authenticated: {key_name} (instance: {instance})")
+            except Exception as e:
+                print(f"  Could not reach gateway: {e}")
+
+        if not instance:
+            instance = _prompt("Instance name (e.g. prod, canary, davy)", "prod")
 
         yaml_values["SPIRIT_DATA_PROVIDER"] = "api"
         yaml_values["SPIRIT_API_URL"] = api_url
