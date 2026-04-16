@@ -185,25 +185,10 @@ def main():
     else:
         yaml_values["SPIRIT_EXCHANGE"] = "none"
 
-    print()
-
-    # --- Step 3: Trading pairs ---
-    print("--- Step 3: Trading Pairs ---")
-    pairs = _prompt("Trading pairs (comma-separated)", "XBTUSD")
-    yaml_values["SPIRIT_PAIRS"] = f'"{pairs}"'
-
-    # --- Step 4: Strategy ---
+    # Defaults — safe out of the box, change later in spirit.yaml or CLI flags
+    yaml_values["SPIRIT_PAIRS"] = '"XBTUSD"'
     yaml_values["SPIRIT_STRATEGY"] = "zone_bounce"
-
-    print()
-
-    # --- Step 5: Trading mode ---
-    print("--- Step 4: Trading Mode ---")
-    print("  1. Paper (simulated trading, no real orders)")
-    print("  2. Live (real orders on exchange)")
-    print()
-    mode_choice = _prompt("Mode [1/2]", "1")
-    yaml_values["SPIRIT_MODE"] = "live" if mode_choice == "2" else "paper"
+    yaml_values["SPIRIT_MODE"] = "paper"
 
     # --- Write config ---
     print()
@@ -221,13 +206,17 @@ def main():
     print("  Setup complete!")
     print("=" * 60)
     print()
+    print("Defaults applied:")
+    print("  Pairs: XBTUSD        (edit SPIRIT_PAIRS in spirit.yaml)")
+    print("  Mode:  paper          (use --mode live when ready)")
+    print()
     print("To start Spirit:")
     print(f"  cd {project_root}")
     print(f"  set -a && source .env && set +a")
     if is_api_mode:
-        print(f"  PYTHONPATH=src python3 -m spirit.main --mode {yaml_values['SPIRIT_MODE']} --no-pause")
+        print(f"  PYTHONPATH=src python3 -m spirit.main --mode paper --no-pause")
     else:
-        print(f"  PYTHONPATH=src python3 -m spirit.main --mode {yaml_values['SPIRIT_MODE']}")
+        print(f"  PYTHONPATH=src python3 -m spirit.main --mode paper")
     print()
 
 
