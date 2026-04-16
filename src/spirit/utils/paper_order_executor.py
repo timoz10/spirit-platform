@@ -1,9 +1,9 @@
 """
 Paper Order Executor — Simulated order execution for paper trading mode.
 
-Same interface as KrakenOrderExecutor (place_order / close_order), swappable
-at init time in spirit_main.py. Uses Kraken's validate=true to confirm order
-validity, then fetches real bid/ask from the public Ticker API for fill prices.
+Same interface as LiveOrderExecutor (place_order / close_order), swappable
+at init time via the OrderExecutor ABC.  Fetches real bid/ask from the
+public Ticker API for fill prices (skipped in replay mode).
 
 Equity tracks true portfolio value: cash + unrealized position value.
 Individual trade results are persisted to PostgreSQL strategy_performance.
@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from spirit.exchange.executor import OrderExecutor
 from spirit.logger import get_logger
 
 logger = get_logger("paper_executor")
@@ -30,7 +31,7 @@ class _OpenPosition:
     order_id: str
 
 
-class PaperOrderExecutor:
+class PaperOrderExecutor(OrderExecutor):
     def __init__(
         self,
         starting_equity: float = 1000.0,
@@ -41,8 +42,12 @@ class PaperOrderExecutor:
         replay_mode: bool = False,
         run_id: str = 'live',
     ):
-        self.pair = pair or 'XBTUSD'
-        self._pair_info = pair_info or {}
+        super().__init__(
+            pair=pair or 'XBTUSD',
+            pair_info=pair_info,
+            starting_equity=starting_equity,
+            run_id=run_id,
+        )
         self.cash = float(starting_equity)
         self._open_positions: Dict[str, _OpenPosition] = {}  # order_id → position
         self._last_prices: Dict[str, float] = {}  # pair → last known bid price
@@ -83,14 +88,6 @@ class PaperOrderExecutor:
             market_price = self._last_prices.get(p.pair, p.entry_price)
             position_value += p.volume * market_price
         self.cash = float(value) - position_value
-
-    def _round_volume(self, volume: float, pair: str = None) -> float:
-        p = pair or self.pair
-        decimals = self._pair_info.get(p, {}).get('lot_decimals', 8)
-        step = 10 ** (-decimals)
-        steps = int(volume / step)
-        rounded = max(step, steps * step)
-        return float(f"{rounded:.10f}")
 
     def _next_order_id(self) -> str:
         self._seq += 1
@@ -178,7 +175,7 @@ class PaperOrderExecutor:
         )
         return {'txid': [order_id], 'descr': {'order': f'paper limit buy {volume} {pair} @ {limit_price}'}}
 
-    def check_limit_fill(self, txid: str, candle: dict) -> dict:
+    def check_order_status(self, txid: str, candle: Optional[dict] = None) -> dict:
         """
         Simulate limit fill: if candle low <= limit_price, order is filled
         at the limit price (conservative simulation).
