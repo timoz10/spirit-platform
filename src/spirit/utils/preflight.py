@@ -189,36 +189,36 @@ def _check_api_gateway_connectivity() -> CheckResult:
         )
 
 
-def _check_kraken_keys() -> CheckResult:
-    """Verify Kraken API keys are accessible."""
+def _check_exchange_keys() -> CheckResult:
+    """Verify exchange API keys are accessible (generic + legacy fallback)."""
     try:
-        from spirit.utils.kraken_api_client import _get_env_or_file
-        key = _get_env_or_file('KRAKEN_API_KEY')
-        secret = _get_env_or_file('KRAKEN_API_SECRET')
+        from spirit.exchange.kraken import _load_credential
+        key = _load_credential('EXCHANGE_API_KEY', 'KRAKEN_API_KEY')
+        secret = _load_credential('EXCHANGE_API_SECRET', 'KRAKEN_API_SECRET')
         if key and secret:
             return CheckResult(
-                name='kraken_keys',
+                name='exchange_keys',
                 passed=True,
                 severity='FATAL',
-                message='Kraken API keys found',
+                message='Exchange API keys found',
             )
         missing = []
         if not key:
-            missing.append('KRAKEN_API_KEY')
+            missing.append('EXCHANGE_API_KEY (or KRAKEN_API_KEY)')
         if not secret:
-            missing.append('KRAKEN_API_SECRET')
+            missing.append('EXCHANGE_API_SECRET (or KRAKEN_API_SECRET)')
         return CheckResult(
-            name='kraken_keys',
+            name='exchange_keys',
             passed=False,
             severity='FATAL',
-            message=f'Missing Kraken keys: {", ".join(missing)}',
+            message=f'Missing exchange keys: {", ".join(missing)}',
         )
     except Exception as e:
         return CheckResult(
-            name='kraken_keys',
+            name='exchange_keys',
             passed=False,
             severity='FATAL',
-            message='Failed to check Kraken keys',
+            message='Failed to check exchange keys',
             detail=str(e),
         )
 
@@ -488,7 +488,7 @@ def run_preflight(skip_kraken: bool = False) -> PreflightResult:
         checks.append(_check_pg_tables())
 
     if not skip_kraken:
-        checks.append(_check_kraken_keys())
+        checks.append(_check_exchange_keys())
 
     # Data quality checks — only meaningful with direct PG access
     if not api_mode:
