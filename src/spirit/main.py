@@ -1326,7 +1326,7 @@ def main():
     # ---------------------------------------------------------------
 
     # Env var override for dev/replay (e.g. SPIRIT_PAIRS="XBTUSD,ETHUSD")
-    env_pairs_str = (os.environ.get('SPIRIT_PAIRS', '') or '').strip()
+    env_pairs_str = (get_config('SPIRIT_PAIRS', '') or os.environ.get('SPIRIT_PAIRS', '') or '').strip()
     if env_pairs_str:
         pairs = [p.strip() for p in env_pairs_str.split(',') if p.strip()]
         logger.info(f"Pairs from env override: {pairs}")
@@ -1432,13 +1432,17 @@ def main():
     order_executor = None
     try:
         if trading_enabled and args.mode == 'live':
-            from spirit.utils.kraken_api_client import get_asset_pairs, KRAKEN_PAIR_DEFAULTS
-            try:
-                pair_info = get_asset_pairs()
-                logger.info(f"[MAIN] Fetched lot sizes from Kraken for {len(pair_info)} pairs")
-            except Exception as e:
-                logger.warning(f"[MAIN] Failed to fetch Kraken pair info, using defaults: {e}")
-                pair_info = dict(KRAKEN_PAIR_DEFAULTS)
+            from spirit.exchange import get_exchange_provider
+            ep = get_exchange_provider()
+            pair_info = {}
+            for p in pairs:
+                try:
+                    info = ep.get_pair_info(p)
+                    pair_info[p] = {'ordermin': info.ordermin, 'lot_decimals': info.lot_decimals}
+                except Exception as e:
+                    logger.warning(f"[MAIN] Failed to fetch pair info for {p}: {e}")
+                    pair_info[p] = {'ordermin': 0.0001, 'lot_decimals': 8}
+            logger.info(f"[MAIN] Fetched lot sizes for {len(pair_info)} pairs via {ep.name}")
 
             from spirit.utils.order_executor import KrakenOrderExecutor
             order_executor = KrakenOrderExecutor(
@@ -1447,8 +1451,15 @@ def main():
                 run_id=run_id,
             )
         elif trading_enabled and args.mode == 'paper':
-            from spirit.utils.kraken_api_client import KRAKEN_PAIR_DEFAULTS
-            pair_info = dict(KRAKEN_PAIR_DEFAULTS)
+            from spirit.exchange import get_exchange_provider
+            ep = get_exchange_provider()
+            pair_info = {}
+            for p in pairs:
+                try:
+                    info = ep.get_pair_info(p)
+                    pair_info[p] = {'ordermin': info.ordermin, 'lot_decimals': info.lot_decimals}
+                except Exception:
+                    pair_info[p] = {'ordermin': 0.0001, 'lot_decimals': 8}
 
             from spirit.utils.paper_order_executor import PaperOrderExecutor
             order_executor = PaperOrderExecutor(
@@ -1519,19 +1530,19 @@ def main():
     # Startup reconciliation: cancel orphaned limit orders from previous session
     if trading_enabled and args.mode == 'live' and order_executor is not None:
         try:
-            from utils.kraken_api_client import get_open_orders
-            open_orders = get_open_orders()
-            orphaned = open_orders.get('open', {})
-            if orphaned:
-                from utils.kraken_api_client import close_order as cancel_kraken_order
-                for txid, order_data in orphaned.items():
-                    descr = order_data.get('descr', {})
+            from spirit.exchange import get_exchange_provider
+            ep = get_exchange_provider()
+            open_orders = ep.get_open_orders()
+            if open_orders:
+                for order in open_orders:
+                    raw = order.raw or {}
+                    descr = raw.get('descr', {})
                     if descr.get('ordertype') == 'limit' and descr.get('type') == 'buy':
                         try:
-                            cancel_kraken_order(txid)
-                            logger.info(f"[STARTUP] Cancelled orphaned limit order: {txid}")
+                            ep.cancel_order(order.txid)
+                            logger.info(f"[STARTUP] Cancelled orphaned limit order: {order.txid}")
                         except Exception as e:
-                            logger.warning(f"[STARTUP] Failed to cancel {txid}: {e}")
+                            logger.warning(f"[STARTUP] Failed to cancel {order.txid}: {e}")
         except Exception as e:
             logger.debug(f"[STARTUP] Open orders check skipped: {e}")
 

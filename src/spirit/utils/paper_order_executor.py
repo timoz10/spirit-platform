@@ -41,9 +41,7 @@ class PaperOrderExecutor:
         replay_mode: bool = False,
         run_id: str = 'live',
     ):
-        from spirit.config import KRAKEN_PAIR
-
-        self.pair = pair or KRAKEN_PAIR
+        self.pair = pair or 'XBTUSD'
         self._pair_info = pair_info or {}
         self.cash = float(starting_equity)
         self._open_positions: Dict[str, _OpenPosition] = {}  # order_id → position
@@ -99,13 +97,12 @@ class PaperOrderExecutor:
         return f"paper-{int(time.time())}-{self._seq}"
 
     def _get_ticker(self, pair: str = None) -> dict:
-        from spirit.utils.kraken_api_client import get_ticker
+        from spirit.exchange import get_exchange_provider
         p = pair or self.pair
-        ticker = get_ticker(p)
+        ticker = get_exchange_provider().get_ticker(p)
         # Cache latest bid for mark-to-market equity
-        if 'bid' in ticker:
-            self._last_prices[p] = ticker['bid']
-        return ticker
+        self._last_prices[p] = ticker.bid
+        return {'bid': ticker.bid, 'ask': ticker.ask, 'last': ticker.last}
 
     def _validate_order(self, side: str, volume: float, pair: str = None) -> dict:
         """Call Kraken AddOrder with validate=true to confirm order is valid.
