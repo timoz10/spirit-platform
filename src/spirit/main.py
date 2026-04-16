@@ -971,10 +971,7 @@ class SpiritOrchestrator:
         # --- Fill check FIRST (before expiry) ---
         # A candle that arrives on the same tick as TTL should still fill (#181)
         candle_low = float(candle.get('low', 0)) if candle else 0
-        if self.mode == 'paper':
-            fill_status = self.order_executor.check_limit_fill(pending.txid, candle)
-        else:
-            fill_status = self.order_executor.check_order_status(pending.txid)
+        fill_status = self.order_executor.check_order_status(pending.txid, candle)
 
         status = fill_status.get('status', 'unknown')
 
@@ -1444,8 +1441,8 @@ def main():
                     pair_info[p] = {'ordermin': 0.0001, 'lot_decimals': 8}
             logger.info(f"[MAIN] Fetched lot sizes for {len(pair_info)} pairs via {ep.name}")
 
-            from spirit.utils.order_executor import KrakenOrderExecutor
-            order_executor = KrakenOrderExecutor(
+            from spirit.utils.order_executor import LiveOrderExecutor
+            order_executor = LiveOrderExecutor(
                 starting_equity=float(os.getenv('ACCOUNT_EQUITY', '10000')),
                 pair_info=pair_info,
                 run_id=run_id,
