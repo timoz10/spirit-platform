@@ -20,7 +20,11 @@ def _prompt(label: str, default: str = "", secret: bool = False) -> str:
         display = f"{label}: "
     if secret:
         import getpass
-        val = getpass.getpass(display)
+        try:
+            val = getpass.getpass(display + "(input hidden) ")
+        except (EOFError, OSError):
+            # Fallback if getpass can't access /dev/tty
+            val = input(display)
     else:
         val = input(display)
     return val.strip() or default
@@ -106,7 +110,16 @@ def main():
 
     if is_api_mode:
         api_key = _prompt("Spirit API key", secret=True)
-        api_url = _prompt("API gateway URL", "https://api.tradebot.live/v1")
+        print()
+        print("API gateway:")
+        print("  1. api.tradebot.live (default)")
+        print("  2. Custom URL")
+        print()
+        gw_choice = _prompt("Gateway [1/2]", "1")
+        if gw_choice == "2":
+            api_url = _prompt("Custom gateway URL")
+        else:
+            api_url = "https://api.tradebot.live/v1"
         instance = _prompt("Instance name (e.g. prod, canary, davy)", "prod")
 
         yaml_values["SPIRIT_DATA_PROVIDER"] = "api"
