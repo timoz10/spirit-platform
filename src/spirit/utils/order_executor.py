@@ -28,9 +28,7 @@ class KrakenOrderExecutor:
         fill_poll_timeout: float = 30.0,
         run_id: str = 'live',
     ):
-        from spirit.config import KRAKEN_PAIR
-
-        self.pair = pair or KRAKEN_PAIR
+        self.pair = pair or 'XBTUSD'
         self._pair_info = pair_info or {}
         self.equity = float(starting_equity)
         self.fill_poll_interval = fill_poll_interval
@@ -54,36 +52,36 @@ class KrakenOrderExecutor:
         return float(f"{rounded:.10f}")
 
     def _get_ticker(self) -> dict:
-        """Fetch bid/ask/last from Kraken public Ticker API."""
-        from spirit.utils.kraken_api_client import get_ticker
-        return get_ticker(self.pair)
+        """Fetch bid/ask/last via ExchangeProvider."""
+        from spirit.exchange import get_exchange_provider
+        t = get_exchange_provider().get_ticker(self.pair)
+        return {'bid': t.bid, 'ask': t.ask, 'last': t.last}
 
     def _wait_for_fill(self, txid: str) -> dict:
         """
-        Poll QueryOrders until status='closed' or timeout.
-        Returns the order data dict from Kraken.
+        Poll ExchangeProvider.get_order_status until status='closed' or timeout.
+        Returns a dict with keys: status, price, vol_exec, cost, fee, opentm, closetm.
         """
-        from spirit.utils.kraken_order_info import get_order_info
+        from spirit.exchange import get_exchange_provider
+        ep = get_exchange_provider()
 
         deadline = time.time() + self.fill_poll_timeout
         last_status = None
 
         while time.time() < deadline:
             try:
-                result = get_order_info(txid)
-                order_data = result.get(txid, {})
-                status = order_data.get('status', '')
-                last_status = status
+                ost = ep.get_order_status(txid)
+                last_status = ost.status
 
-                if status == 'closed':
+                if ost.status == 'closed':
                     logger.info(f"[LIVE] Order {txid} filled: status=closed")
-                    return order_data
+                    return ost.raw or {}
 
-                if status in ('canceled', 'expired'):
-                    logger.warning(f"[LIVE] Order {txid} {status}")
-                    return order_data
+                if ost.status in ('canceled', 'expired'):
+                    logger.warning(f"[LIVE] Order {txid} {ost.status}")
+                    return ost.raw or {}
 
-                logger.debug(f"[LIVE] Order {txid} status={status}, polling...")
+                logger.debug(f"[LIVE] Order {txid} status={ost.status}, polling...")
             except Exception as e:
                 logger.warning(f"[LIVE] QueryOrders error for {txid}: {e}")
 
@@ -95,8 +93,8 @@ class KrakenOrderExecutor:
         )
         # Return whatever we last got — caller handles incomplete fills
         try:
-            result = get_order_info(txid)
-            return result.get(txid, {})
+            ost = ep.get_order_status(txid)
+            return ost.raw or {}
         except Exception:
             return {}
 
@@ -251,9 +249,10 @@ class KrakenOrderExecutor:
         with txid. Caller is responsible for polling check_order_status().
         """
         from spirit.config import TRADE_USD_AMOUNT
-        from utils import kraken_api_client as kc
+        from spirit.exchange import get_exchange_provider
 
         submitted_at = datetime.now(timezone.utc)
+        ep = get_exchange_provider()
 
         # Get ticker for volume calculation
         try:
@@ -277,17 +276,16 @@ class KrakenOrderExecutor:
             f"price={limit_price:.2f} volume={volume}"
         )
 
-        result = kc.place_order(
+        order = ep.place_order(
             self.pair, "buy", volume,
-            price=limit_price, ordertype="limit", validate=False,
+            order_type="limit", price=limit_price,
         )
 
-        txids = result.get("txid") or []
-        if not txids:
-            logger.error(f"[LIVE] No txid from limit order: {result}")
-            return result
+        if not order.txid:
+            logger.error(f"[LIVE] No txid from limit order: {order}")
+            return {'txid': [], 'raw': order.raw}
 
-        txid = txids[0]
+        txid = order.txid
         trade_record.order_id = txid
         trade_record.order_type = 'limit'
         trade_record.limit_price = limit_price
@@ -304,18 +302,18 @@ class KrakenOrderExecutor:
         Query order status without waiting. Returns dict with:
         status, fill_price, fill_volume, fill_fee, fill_cost.
         """
-        from spirit.utils.kraken_order_info import get_order_info
+        from spirit.exchange import get_exchange_provider
 
         try:
-            result = get_order_info(txid)
-            order_data = result.get(txid, {})
+            ost = get_exchange_provider().get_order_status(txid)
+            raw = ost.raw or {}
             return {
-                'status': order_data.get('status', 'unknown'),
-                'fill_price': float(order_data.get('price', 0)) or None,
-                'fill_volume': float(order_data.get('vol_exec', 0)) or None,
-                'fill_fee': float(order_data.get('fee', 0)) or None,
-                'fill_cost': float(order_data.get('cost', 0)) or None,
-                'raw': order_data,
+                'status': ost.status,
+                'fill_price': ost.filled_price or None,
+                'fill_volume': ost.filled_volume or None,
+                'fill_fee': float(raw.get('fee', 0)) or None,
+                'fill_cost': float(raw.get('cost', 0)) or None,
+                'raw': raw,
             }
         except Exception as e:
             logger.warning(f"[LIVE] check_order_status({txid}) failed: {e}")
@@ -324,12 +322,12 @@ class KrakenOrderExecutor:
 
     def cancel_order(self, txid: str) -> bool:
         """Cancel an unfilled limit order. Returns True on success."""
-        from utils import kraken_api_client as kc
+        from spirit.exchange import get_exchange_provider
 
         try:
-            kc.close_order(txid)
+            result = get_exchange_provider().cancel_order(txid)
             logger.info(f"[LIVE] Cancelled order: txid={txid}")
-            return True
+            return result
         except Exception as e:
             logger.error(f"[LIVE] Failed to cancel {txid}: {e}")
             return False
@@ -339,13 +337,13 @@ class KrakenOrderExecutor:
         After a limit order is confirmed filled: update trade_record fields,
         record to live_orders, and update equity.
         """
-        from spirit.utils.kraken_order_info import get_order_info
+        from spirit.exchange import get_exchange_provider
 
         submitted_at = datetime.now(timezone.utc)
 
         try:
-            result = get_order_info(txid)
-            fill_data = result.get(txid, {})
+            ost = get_exchange_provider().get_order_status(txid)
+            fill_data = ost.raw or {}
         except Exception as e:
             logger.error(f"[LIVE] finalize_limit_fill query failed: {e}")
             fill_data = {}
@@ -400,7 +398,8 @@ class KrakenOrderExecutor:
         records to live_orders, and updates equity.
         """
         from spirit.config import TRADE_USD_AMOUNT
-        from utils import kraken_api_client as kc
+        from spirit.exchange import get_exchange_provider
+        ep = get_exchange_provider()
 
         submitted_at = datetime.now(timezone.utc)
 
@@ -438,15 +437,15 @@ class KrakenOrderExecutor:
         logger.info(f"[LIVE] Placing BUY: pair={self.pair} volume={volume} mid={mid_price}")
 
         # Place market buy
-        result = kc.place_order(self.pair, "buy", volume, ordertype="market", validate=False)
+        order = ep.place_order(self.pair, "buy", volume, order_type="market")
 
         # Extract txid
-        txids = result.get("txid") or []
-        if not txids:
-            logger.error(f"[LIVE] No txid returned from place_order: {result}")
-            return result
+        if not order.txid:
+            logger.error(f"[LIVE] No txid returned from place_order: {order}")
+            return {'txid': [], 'raw': order.raw}
 
-        txid = txids[0]
+        result = order.raw or {}
+        txid = order.txid
         trade_record.order_id = txid
         self._entry_txid = txid
 
@@ -497,7 +496,8 @@ class KrakenOrderExecutor:
         Waits for fill, computes PnL, updates trade_record, records to
         live_orders and strategy_performance, and updates equity.
         """
-        from utils import kraken_api_client as kc
+        from spirit.exchange import get_exchange_provider
+        ep = get_exchange_provider()
 
         submitted_at = datetime.now(timezone.utc)
 
@@ -518,15 +518,15 @@ class KrakenOrderExecutor:
         logger.info(f"[LIVE] Placing SELL: pair={self.pair} volume={volume} mid={mid_price}")
 
         # Place market sell
-        result = kc.place_order(self.pair, "sell", volume, ordertype="market", validate=False)
+        order = ep.place_order(self.pair, "sell", volume, order_type="market")
 
         # Extract txid
-        txids = result.get("txid") or []
-        if not txids:
-            logger.error(f"[LIVE] No txid returned from close_order: {result}")
-            return result
+        if not order.txid:
+            logger.error(f"[LIVE] No txid returned from close_order: {order}")
+            return {'txid': [], 'raw': order.raw}
 
-        txid = txids[0]
+        result = order.raw or {}
+        txid = order.txid
         trade_record.order_id = txid
 
         # Wait for fill

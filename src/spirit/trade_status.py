@@ -2,31 +2,36 @@
 """
 trade_status.py
 
-Responsible for checking the Kraken API for any open trades and logging account balance when the program starts.
+Checks for open trades and account balance at startup via ExchangeProvider.
 """
 
 from spirit.logger import get_logger
-from spirit.utils.kraken_api_client import get_kraken_balances, get_open_orders
+
 
 def check_open_trades_and_balance():
     """
-    Checks Kraken API for open trades and account balance. Logs both.
+    Checks exchange for open trades and account balance. Logs both.
     Returns tuple: (open_orders, balances)
     """
     logger = get_logger("trade_status")
     open_orders = None
     balances = None
     try:
-        open_orders = get_open_orders()
-        open_orders_list = open_orders.get('open', {}) if open_orders else {}
+        from spirit.exchange import get_exchange_provider
+        ep = get_exchange_provider()
+        open_orders_list = ep.get_open_orders()
         if open_orders_list:
-            logger.info(f"Found {len(open_orders_list)} open trades: {list(open_orders_list.keys())}")
+            logger.info(f"Found {len(open_orders_list)} open trades: {[o.txid for o in open_orders_list]}")
         else:
             logger.info("No open trades found.")
+        # Return in legacy format for callers that expect dict
+        open_orders = {'open': {o.txid: o.raw or {} for o in open_orders_list}}
     except Exception as e:
         logger.error(f"Error checking open trades: {e}")
     try:
-        balances = get_kraken_balances()
+        from spirit.exchange import get_exchange_provider
+        ep = get_exchange_provider()
+        balances = ep.get_balance()
         logger.info(f"Account balances: {balances}")
     except Exception as e:
         logger.error(f"Error fetching account balances: {e}")

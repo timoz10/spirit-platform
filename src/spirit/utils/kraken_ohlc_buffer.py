@@ -4,7 +4,6 @@ import threading
 import time
 import pandas as pd
 from collections import deque
-from spirit.utils.kraken_api_client import get_ohlc_data
 from spirit.logger import logger
 from spirit.config import KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL, KRAKEN_OHLC_BUFFER_DELAY_SECONDS
 
@@ -146,8 +145,25 @@ class KrakenOHLCBuffer:
             if latest_dt is not None:
                 logger.debug(f"[KrakenOHLCBuffer.update_buffer_from_api] latest_dt detected: {latest_dt}")
             # Fetch new data from Kraken (outside lock)
-            logger.debug(f"[KrakenOHLCBuffer] Fetching OHLC data from Kraken API with count={self.buffer_size + 1}, interval={self.interval}, pair={self.pair}...")
-            candles = get_ohlc_data(count=self.buffer_size + 1, interval=int(self.interval), pair=self.pair, only_closed=True)
+            logger.debug(f"[KrakenOHLCBuffer] Fetching OHLC data via ExchangeProvider count={self.buffer_size + 1}, interval={self.interval}, pair={self.pair}...")
+            from spirit.exchange import get_exchange_provider
+            ep = get_exchange_provider()
+            raw_candles = ep.get_ohlc(self.pair, interval=int(self.interval), count=self.buffer_size + 1)
+            # Convert OHLCCandle dataclasses to dicts for downstream compat
+            candles = [
+                {
+                    'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(c.timestamp)),
+                    'timestamp': c.timestamp,
+                    'open': c.open,
+                    'high': c.high,
+                    'low': c.low,
+                    'close': c.close,
+                    'vwap': c.vwap,
+                    'volume': c.volume,
+                    'count': c.count,
+                }
+                for c in raw_candles
+            ]
             if candles is None or len(candles) < 2:
                 logger.warning("[KrakenOHLCBuffer] Not enough candles returned to skip open candle.")
                 return
