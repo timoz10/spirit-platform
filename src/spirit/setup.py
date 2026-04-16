@@ -128,7 +128,10 @@ def main():
                 import json
                 req = urllib.request.Request(
                     f"{api_url}/whoami",
-                    headers={"X-API-Key": api_key},
+                    headers={
+                        "X-API-Key": api_key,
+                        "User-Agent": "Spirit-Setup/1.0",
+                    },
                 )
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     data = json.loads(resp.read())
