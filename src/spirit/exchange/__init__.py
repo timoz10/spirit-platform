@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from spirit.exchange.executor import OrderExecutor
 from spirit.exchange.protocol import (
     ExchangeProvider,
     Ticker,
@@ -41,6 +42,7 @@ logger = get_logger("exchange")
 __all__ = [
     "get_exchange_provider",
     "ExchangeProvider",
+    "OrderExecutor",
     "Ticker",
     "PairInfo",
     "OrderResult",

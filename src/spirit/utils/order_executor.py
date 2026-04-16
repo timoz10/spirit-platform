@@ -1,7 +1,7 @@
 """
-Order executor adapter that bridges TradeRecord-based calls from trade_logic
-to the low-level Kraken API client functions. Ensures correct side/volume
-are passed and captures txid into TradeRecord.order_id.
+Live order executor — bridges TradeRecord-based calls from the orchestrator
+to the ExchangeProvider interface.  Ensures correct side/volume are passed
+and captures txid into TradeRecord.order_id.
 
 Enhanced with fill reconciliation, PG recording, equity tracking, and
 slippage measurement to match PaperOrderExecutor capabilities.
@@ -13,12 +13,13 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+from spirit.exchange.executor import OrderExecutor
 from spirit.logger import get_logger
 
 logger = get_logger("order_executor")
 
 
-class KrakenOrderExecutor:
+class LiveOrderExecutor(OrderExecutor):
     def __init__(
         self,
         pair: Optional[str] = None,
@@ -28,28 +29,29 @@ class KrakenOrderExecutor:
         fill_poll_timeout: float = 30.0,
         run_id: str = 'live',
     ):
-        self.pair = pair or 'XBTUSD'
-        self._pair_info = pair_info or {}
-        self.equity = float(starting_equity)
+        super().__init__(
+            pair=pair or 'XBTUSD',
+            pair_info=pair_info,
+            starting_equity=starting_equity,
+            run_id=run_id,
+        )
+        self._equity = float(starting_equity)
         self.fill_poll_interval = fill_poll_interval
         self.fill_poll_timeout = fill_poll_timeout
         self._entry_txid: Optional[str] = None
-        self.run_id = run_id
 
         logger.info(
             f"[LIVE] Initialized: equity=${self.equity:.2f} pair={self.pair} "
             f"pairs_configured={len(self._pair_info)}"
         )
 
-    def _round_volume(self, volume: float, pair: str = None) -> float:
-        if volume is None:
-            return None
-        p = pair or self.pair
-        decimals = self._pair_info.get(p, {}).get('lot_decimals', 8)
-        step = 10 ** (-decimals)
-        steps = int(volume / step)
-        rounded = max(step, steps * step)
-        return float(f"{rounded:.10f}")
+    @property
+    def equity(self) -> float:
+        return self._equity
+
+    @equity.setter
+    def equity(self, value: float) -> None:
+        self._equity = float(value)
 
     def _get_ticker(self) -> dict:
         """Fetch bid/ask/last via ExchangeProvider."""
@@ -297,10 +299,13 @@ class KrakenOrderExecutor:
         )
         return result
 
-    def check_order_status(self, txid: str) -> dict:
+    def check_order_status(self, txid: str, candle: Optional[dict] = None) -> dict:
         """
         Query order status without waiting. Returns dict with:
         status, fill_price, fill_volume, fill_fee, fill_cost.
+
+        *candle* is accepted for ABC compatibility but ignored by the live
+        executor (fill status comes from the exchange).
         """
         from spirit.exchange import get_exchange_provider
 

@@ -295,6 +295,37 @@ assert info.lot_decimals > 0
 
 Paper mode only uses public methods: `get_ticker`, `get_ohlc`, `get_pair_info`. You can develop and test your plugin without exchange API keys by implementing these first.
 
+## OrderExecutor ABC
+
+The `OrderExecutor` ABC (`src/spirit/exchange/executor.py`) sits between the orchestrator and the `ExchangeProvider`. It handles Spirit-level trade lifecycle: equity tracking, fill polling, PG recording, and slippage measurement.
+
+```
+Orchestrator (main.py)
+    │
+    ▼ place_order / close_order / check_order_status / ...
+OrderExecutor (ABC)
+    ├── LiveOrderExecutor   ← Real fills via ExchangeProvider
+    └── PaperOrderExecutor  ← Simulated fills from candle data
+```
+
+**You do NOT need to implement an OrderExecutor to add a new exchange.** The existing `LiveOrderExecutor` works with any `ExchangeProvider` implementation. The ABC exists to formalise the contract between the orchestrator and the two executor modes (live vs paper).
+
+### OrderExecutor methods
+
+| Method | Purpose |
+|--------|---------|
+| `place_order(trade_record)` | Market buy — waits for fill, updates trade_record |
+| `close_order(open_trade, trade_record)` | Market sell — computes PnL, records to PG |
+| `place_limit_order(trade_record, limit_price)` | Limit buy — returns immediately (no fill wait) |
+| `check_order_status(txid, candle=None)` | Query fill status (live queries exchange, paper simulates from candle) |
+| `cancel_order(txid)` | Cancel unfilled limit order |
+| `finalize_limit_fill(txid, trade_record)` | Post-fill bookkeeping after limit order fills |
+| `equity` (property) | Current portfolio value (cash + unrealised positions) |
+
+### When would you implement a custom OrderExecutor?
+
+Only if you need fundamentally different trade lifecycle semantics — for example, a backtest executor that fills from historical order books, or a DCA executor that splits large orders into tranches. For standard trading, `LiveOrderExecutor` + your `ExchangeProvider` is sufficient.
+
 ## Reference implementation
 
 `src/spirit/exchange/kraken.py` is the reference implementation. Study it for:
@@ -309,8 +340,9 @@ Paper mode only uses public methods: `get_ticker`, `get_ohlc`, `get_pair_info`. 
 
 ```
 src/spirit/exchange/
-├── __init__.py          # get_exchange_provider() factory
+├── __init__.py          # get_exchange_provider() factory + OrderExecutor export
 ├── protocol.py          # ExchangeProvider Protocol + dataclasses
+├── executor.py          # OrderExecutor ABC
 ├── kraken.py            # Kraken reference implementation
 └── yourexchange.py      # Your plugin (you create this)
 ```
