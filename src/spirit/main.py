@@ -1555,6 +1555,11 @@ def main():
     pipeline_bus_mode = get_config('PIPELINE_EVENT_BUS', 'none')
     is_live_mode = args.data_source == 'kraken'
 
+    # Auto-disable PgEventBus in api-mode — no PG to LISTEN on (#327)
+    if pipeline_bus_mode == 'pg' and get_config('SPIRIT_DATA_PROVIDER', 'pg') == 'api':
+        logger.info("[PIPELINE] Auto-disabling PgEventBus: api-mode has no PG for LISTEN/NOTIFY")
+        pipeline_bus_mode = 'none'
+
     spirit_data_mode = get_config('SPIRIT_DATA_MODE', 'kraken_api')
 
     if pipeline_bus_mode == 'pg' and is_live_mode:
