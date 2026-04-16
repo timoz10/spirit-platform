@@ -1161,11 +1161,22 @@ def main():
     logger = get_logger("spirit_main")
     logger.info("---------- SPIRIT starting ----------")
 
-    # Pre-flight validation (skip Kraken keys for replay mode — no API needed)
+    # Pre-flight validation
+    # Kraken exchange keys are only needed in live mode.
+    # Detect mode from CLI (--mode live) or config (SPIRIT_MODE=live).
     import sys
     is_replay_mode = '--replay' in sys.argv
+    is_live_mode = False
+    for i, arg in enumerate(sys.argv):
+        if arg == '--mode' and i + 1 < len(sys.argv):
+            is_live_mode = sys.argv[i + 1] == 'live'
+            break
+    if not is_live_mode and not is_replay_mode:
+        # Daemon mode uses SPIRIT_MODE from config
+        is_live_mode = get_config('SPIRIT_MODE', 'paper') == 'live'
+    skip_kraken = not is_live_mode
     from spirit.utils.preflight import run_preflight
-    preflight = run_preflight(skip_kraken=is_replay_mode)
+    preflight = run_preflight(skip_kraken=skip_kraken)
     if not preflight.passed:
         logger.error("Pre-flight checks FAILED. Spirit cannot start.")
         for f in preflight.fatal_failures:

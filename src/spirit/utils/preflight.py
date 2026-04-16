@@ -21,6 +21,20 @@ from spirit.logger import get_logger
 logger = get_logger("preflight")
 
 
+def _is_api_mode() -> bool:
+    """Return True when Spirit is configured for api-mode (no direct PG)."""
+    from spirit.utils.config_loader import get_config
+    mode = get_config("SPIRIT_DATA_PROVIDER", "pg")
+    if mode == "api":
+        return True
+    # Also auto-detect: if SPIRIT_API_KEY is set but POSTGRES_HOST is not,
+    # the user clearly intends api-mode even if they forgot the explicit flag.
+    api_key = get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
+    if api_key and not os.environ.get("POSTGRES_HOST"):
+        return True
+    return False
+
+
 # Canonical mapping: PostgreSQL role → expected SPIRIT_INSTANCE value.
 # Extend here when new instances are onboarded (Rule 7: schema isolation).
 PG_USER_TO_INSTANCE = {
@@ -124,6 +138,53 @@ def _check_pg_tables() -> CheckResult:
             passed=False,
             severity='FATAL',
             message='Failed to check PG tables',
+            detail=str(e),
+        )
+
+
+def _check_api_gateway_connectivity() -> CheckResult:
+    """Test API gateway reachability (api-mode only)."""
+    try:
+        from spirit.utils.config_loader import get_config
+        import urllib.request
+        import urllib.error
+
+        base_url = get_config("SPIRIT_API_URL", "")
+        if not base_url:
+            base_url = os.environ.get("SPIRIT_API_URL", "http://10.0.0.4:8000/v1")
+        health_url = base_url.rstrip("/") + "/health"
+
+        req = urllib.request.Request(health_url, method="GET",
+                                     headers={"User-Agent": "Spirit/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                return CheckResult(
+                    name='api_gateway',
+                    passed=True,
+                    severity='FATAL',
+                    message=f'API gateway reachable at {health_url}',
+                )
+            return CheckResult(
+                name='api_gateway',
+                passed=False,
+                severity='FATAL',
+                message=f'API gateway returned HTTP {resp.status}',
+                detail=health_url,
+            )
+    except urllib.error.URLError as e:
+        return CheckResult(
+            name='api_gateway',
+            passed=False,
+            severity='FATAL',
+            message='API gateway unreachable',
+            detail=f'{health_url}: {e.reason}',
+        )
+    except Exception as e:
+        return CheckResult(
+            name='api_gateway',
+            passed=False,
+            severity='FATAL',
+            message='API gateway connectivity check failed',
             detail=str(e),
         )
 
@@ -277,12 +338,14 @@ def _check_instance_schema_match() -> CheckResult:
     )
 
 
-def _check_env_vars(skip_kraken: bool = False) -> CheckResult:
+def _check_env_vars(skip_kraken: bool = False, api_mode: bool = False) -> CheckResult:
     """Verify required environment variables / config values are set."""
     from spirit.utils.config_loader import get_config
 
     # Secrets: must come from env vars (not YAML)
-    secrets = ['POSTGRES_PASSWORD']
+    secrets: list[str] = []
+    if not api_mode:
+        secrets.append('POSTGRES_PASSWORD')
     if not skip_kraken:
         secrets.append('KRAKEN_API_KEY')
     missing = [v for v in secrets if not os.environ.get(v)]
@@ -290,11 +353,17 @@ def _check_env_vars(skip_kraken: bool = False) -> CheckResult:
     if 'KRAKEN_API_KEY' in missing and os.environ.get('KRAKEN_API_KEY_FILE'):
         missing.remove('KRAKEN_API_KEY')
 
+    # api-mode requires an API key
+    if api_mode:
+        api_key = get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
+        if not api_key:
+            missing.append('SPIRIT_API_KEY')
+
     # Config: can come from env var OR YAML
     config_keys = ['SPIRIT_STRATEGY']
     missing += [v for v in config_keys if not get_config(v)]
 
-    total = len(secrets) + len(config_keys)
+    total = len(secrets) + len(config_keys) + (1 if api_mode else 0)
     if missing:
         return CheckResult(
             name='env_vars',
@@ -399,21 +468,39 @@ def run_preflight(skip_kraken: bool = False) -> PreflightResult:
     FATAL failures mean Spirit should not start.
     WARN failures are logged but do not block startup.
 
-    skip_kraken: If True, skip Kraken key check (e.g. replay mode).
+    skip_kraken: If True, skip Kraken key check (e.g. paper/replay mode).
     """
+    api_mode = _is_api_mode()
+    if api_mode:
+        logger.info("[PREFLIGHT] api-mode detected — skipping PG checks, checking gateway")
+
     checks = [
-        _check_env_vars(skip_kraken=skip_kraken),
-        _check_pg_connectivity(),
-        _check_instance_schema_match(),
-        _check_pg_tables(),
+        _check_env_vars(skip_kraken=skip_kraken, api_mode=api_mode),
     ]
+
+    if api_mode:
+        # api-mode: verify gateway reachability instead of PG
+        checks.append(_check_api_gateway_connectivity())
+    else:
+        # pg-mode: verify PG connectivity, schema match, tables
+        checks.append(_check_pg_connectivity())
+        checks.append(_check_instance_schema_match())
+        checks.append(_check_pg_tables())
+
     if not skip_kraken:
         checks.append(_check_kraken_keys())
-    checks.extend([
-        _check_ohlc_freshness(),
-        _check_profiler_data(),
-        _check_disk_space(),
-    ])
+
+    # Data quality checks — only meaningful with direct PG access
+    if not api_mode:
+        checks.append(_check_ohlc_freshness())
+
+    # Profiler data check loads heavy deps (pandas, numpy) and queries via
+    # DataProvider — skip in api-mode where deps may be minimal and data
+    # availability is already proven by the gateway health check.
+    if not api_mode:
+        checks.append(_check_profiler_data())
+
+    checks.append(_check_disk_space())
 
     fatal_failed = any(not c.passed and c.severity == 'FATAL' for c in checks)
 
