@@ -81,7 +81,7 @@ class SpiritOrchestrator:
                  risk_gate, mode, interval, monitoring_intervals, pairs,
                  update_state=None, web_inc=None, web_sig=None, web_dec=None,
                  registry=None, event_bus=None, readiness_gate=None,
-                 run_id='live'):
+                 freshness_cache=None, run_id='live'):
         self.context_manager = context_manager      # ContextManager
         self.strategies = strategies                 # Dict[str, BaseStrategy]
         self.pairs = pairs                           # List[str]
@@ -93,8 +93,9 @@ class SpiritOrchestrator:
         self.interval = interval
         self.monitoring_intervals = set(monitoring_intervals)
         self.registry = registry                     # StrategyRegistry (None for non-Spine)
-        self.event_bus = event_bus                   # PgEventBus or None
-        self.readiness_gate = readiness_gate         # DataReadinessGate or None
+        self.event_bus = event_bus                   # PipelineEventBus or None
+        self.readiness_gate = readiness_gate         # DataReadinessGate or None (legacy; kept for replay compat)
+        self.freshness_cache = freshness_cache       # PipelineFreshnessCache or None
         self.run_id = run_id                         # 'live' or UUID for replay
         self.data_source = None  # set after data source creation
         self.csv_thread = None
@@ -250,18 +251,23 @@ class SpiritOrchestrator:
             from spirit.utils.db_utils import set_active_pair
             set_active_pair(pair)
 
-            # Pipeline readiness gate: wait for upstream D-Limit data
-            if self.readiness_gate is not None and self.readiness_gate.enabled:
+            # Pipeline freshness gate (non-blocking): only run entry/full-eval
+            # if the D-Limit indicators for this candle have landed. On MISS we
+            # log and skip — no stale-data fallback. Next tick re-checks.
+            # Exits run via on_monitoring_tick and are intentionally not gated
+            # here (they react to price, not indicators).
+            if self.freshness_cache is not None:
                 candle_dt_iso = ctx.health.get('last_candle_time')
-                if candle_dt_iso:
-                    ready = self.readiness_gate.wait_for_dlimit(
-                        pair, candle_dt_iso, interval=self.interval
+                stage = f"dlimit_{self.interval}m"
+                if candle_dt_iso and not self.freshness_cache.is_fresh(
+                    pair, stage, self.interval, candle_dt_iso
+                ):
+                    latest = self.freshness_cache.latest(pair, stage, self.interval)
+                    self._cb_logger.info(
+                        f"[{pair}][MISS] {stage} not fresh for candle={candle_dt_iso} "
+                        f"(cache latest={latest}) — skip eval, retry next tick"
                     )
-                    if not ready:
-                        self._cb_logger.warning(
-                            f"[{pair}][PIPELINE] D-Limit not ready for {candle_dt_iso}, "
-                            f"evaluating with possibly stale data"
-                        )
+                    return
 
             result = strategy.evaluate_trade(
                 pair, mode=self.mode, open_trade=tsm.open_trade
@@ -649,7 +655,10 @@ class SpiritOrchestrator:
                 # State 2: check pending limit order
                 self._check_pending_limit(pair, candle_dict)
             else:
-                # State 3: entry scan on sub-signal ticks
+                # State 3: entry scan on sub-signal ticks (e.g. 1m). Not gated
+                # on dlimit freshness — these reactions are price-driven against
+                # already-known zones, which don't expire hour-to-hour. If the
+                # WS pipe breaks we'll see it in the 60m evaluate_trade MISS logs.
                 result = strategy.on_entry_scan_tick(pair, int(interval_val), candle_dict)
                 if result and result.get('entry'):
                     self._process_entry(pair, result)
@@ -1559,11 +1568,17 @@ def main():
     # ---------------------------------------------------------------
     # api-mode Spirit connects to the gateway /v1/events WebSocket for
     # pipeline readiness. Replay mode skips it (all data already in DB).
-    # Set PIPELINE_EVENT_BUS=none to disable and fall back to polling.
+    # Set PIPELINE_EVENT_BUS=none to disable.
+    #
+    # Design: WsEventBus → PipelineFreshnessCache (push-updated) →
+    # orchestrator's non-blocking is_fresh() check. No timeouts, no
+    # stale-data fallback. On MISS, tick skips entry/full-eval; exits
+    # still run (price-driven, gate-free).
     # ---------------------------------------------------------------
 
     event_bus = None
     readiness_gate = None
+    freshness_cache = None
 
     if args.data_source != 'replay':
         bus_mode = (
@@ -1586,22 +1601,30 @@ def main():
             )
             if api_url and api_key:
                 from spirit.pipeline import (
-                    DataReadinessGate,
+                    PipelineFreshnessCache,
                     WsEventBus,
                     derive_ws_url,
                 )
                 ws_url = ws_url_override or derive_ws_url(api_url)
                 event_bus = WsEventBus(url=ws_url, api_key=api_key)
+
+                # Freshness cache — push-updated by the WsEventBus dispatch
+                # thread. Subscribe BEFORE start() so the initial session
+                # includes these channels in its subscribe op.
+                freshness_cache = PipelineFreshnessCache()
+                for stage_channel in (
+                    'pipeline_dlimit_60m',
+                    'pipeline_dlimit_15m',
+                    'pipeline_bounce_physics',
+                ):
+                    event_bus.subscribe(stage_channel, freshness_cache.record)
+
                 event_bus.start()
 
-                readiness_timeout = float(
-                    os.environ.get('PIPELINE_GATE_TIMEOUT')
-                    or get_config('PIPELINE_GATE_TIMEOUT', '45')
+                logger.info(
+                    f"[PIPELINE] WsEventBus connected to {ws_url} — "
+                    f"freshness cache subscribed to dlimit_60m / dlimit_15m / bounce_physics"
                 )
-                readiness_gate = DataReadinessGate(
-                    event_bus=event_bus, timeout=readiness_timeout
-                )
-                logger.info(f"[PIPELINE] WsEventBus connected to {ws_url}")
             else:
                 logger.warning(
                     "[PIPELINE] SPIRIT_API_URL/SPIRIT_API_KEY not set — "
@@ -1640,6 +1663,7 @@ def main():
         registry=registry,
         event_bus=event_bus,
         readiness_gate=readiness_gate,
+        freshness_cache=freshness_cache,
         run_id=run_id,
     )
 
