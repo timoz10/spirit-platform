@@ -4,6 +4,17 @@ DataProvider — Abstract data access for Spirit runtime.
 Spirit is api-driven: all data access goes through the API gateway.
 pg-mode was removed in the platform pivot (#340).
 
+Framework / IP boundary (#340):
+  - FrameworkDataProvider: data any Spirit instance needs (OHLC, state,
+    performance, heartbeats, pairs). Used by both free-tier and
+    subscription-tier Spirit.
+  - IPDataProvider: data produced by our IP pipeline (D-Limit zones,
+    bounces, regime-derived indicators, risk gate, theses, scorer,
+    tumblers, trajectories). Available only to subscription-tier Spirit.
+  - DataProvider: union of both, satisfied by the subscription-tier
+    ApiDataProvider. Free-tier Spirit will implement FrameworkDataProvider
+    only (backed by local SQLite — future work).
+
 Usage:
     from spirit.utils.data_provider import get_data_provider
     dp = get_data_provider()
@@ -12,7 +23,6 @@ Usage:
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -21,16 +31,23 @@ from spirit.logger import get_logger
 logger = get_logger("data_provider")
 
 
-@runtime_checkable
-class DataProvider(Protocol):
-    """Abstract interface for all Spirit data access (read + write).
+# =====================================================================
+# Framework interface — data any Spirit instance needs
+# =====================================================================
 
-    Implementation: ApiDataProvider (src/spirit/utils/api_data_provider.py).
+
+@runtime_checkable
+class FrameworkDataProvider(Protocol):
+    """Framework data access: OHLC, state, performance, heartbeats, pairs.
+
+    Any Spirit instance — free-tier or subscription — uses this interface.
+    Free-tier implementations back it with local SQLite; subscription-tier
+    backs it with the API gateway.
     """
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # OHLC
-    # =================================================================
+    # -----------------------------------------------------------------
 
     def get_ohlc(
         self,
@@ -47,9 +64,110 @@ class DataProvider(Protocol):
         """
         ...
 
-    # =================================================================
-    # Zones
-    # =================================================================
+    # -----------------------------------------------------------------
+    # State (spirit_state key-value store) — crash recovery
+    # -----------------------------------------------------------------
+
+    def get_state(self, key: str) -> Any:
+        """Fetch a single value from spirit_state by exact key."""
+        ...
+
+    def put_state(self, key: str, value: Any) -> None:
+        """Upsert a key-value pair into spirit_state."""
+        ...
+
+    def ensure_table(self, table_name: str, create_sql: str) -> bool:
+        """Ensure a table exists. API-backed: no-op (True)."""
+        ...
+
+    # -----------------------------------------------------------------
+    # Performance — the user's own trade outcomes
+    # -----------------------------------------------------------------
+
+    def get_performance(
+        self,
+        *,
+        pair: str | None = None,
+        strategy: str | None = None,
+        source: str | None = None,
+        run_id: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[dict]:
+        """Fetch strategy_performance rows."""
+        ...
+
+    def write_performance(self, data: dict) -> int:
+        """Insert a single trade result. Returns rows affected."""
+        ...
+
+    def write_performance_batch(self, trades: list[dict]) -> int:
+        """Bulk insert trade results. Returns rows affected."""
+        ...
+
+    def clear_performance(self, *, run_id: str) -> int:
+        """Delete performance rows for a specific run_id. Returns rows deleted."""
+        ...
+
+    def get_strategy_metrics(
+        self,
+        strategy_name: str,
+        as_of_date: datetime,
+        *,
+        baseline_days: int = 90,
+        current_days: int = 14,
+        recent_days: int = 7,
+    ) -> dict:
+        """Per-strategy win-rate + streak metrics from strategy_performance.
+
+        Pure trade-outcome aggregation — framework data (users own their
+        trades). Consumed by IP regime engine but the aggregation itself
+        is not IP-derived.
+        """
+        ...
+
+    # -----------------------------------------------------------------
+    # Heartbeats — daemon health
+    # -----------------------------------------------------------------
+
+    def write_heartbeat(
+        self,
+        daemon_id: str,
+        *,
+        instance: str,
+        status: str = "ok",
+        metadata: dict | None = None,
+        run_id: str = "live",
+    ) -> int:
+        """Upsert a daemon heartbeat. Returns rows affected."""
+        ...
+
+    # -----------------------------------------------------------------
+    # Pairs — which symbols are active for this instance
+    # -----------------------------------------------------------------
+
+    def get_pairs(self, instance: str | None = None) -> list[dict]:
+        """Fetch active pairs from pair registry."""
+        ...
+
+
+# =====================================================================
+# IP interface — data produced by our IP pipeline
+# =====================================================================
+
+
+@runtime_checkable
+class IPDataProvider(Protocol):
+    """IP data access: zones, bounces, D-Limit, regime, calibrations.
+
+    Subscription-tier only. Free-tier Spirit does not consume this
+    interface — users bring their own algorithms and data feeds.
+    """
+
+    # -----------------------------------------------------------------
+    # D-Limit zones + touches + bounces
+    # -----------------------------------------------------------------
 
     def get_zones(
         self,
@@ -85,17 +203,22 @@ class DataProvider(Protocol):
         start: datetime | None = None,
         limit: int = 10000,
     ) -> list[dict]:
-        """Deduped bounce events with per-zone LAG window function.
-
-        Returns list of dicts with keys: zone_id, touch_time, touch_price,
-        approach_direction, acted_as, price_level. Used by zone_bounce
-        strategy's entry-path cache — see #287.
-        """
+        """Deduped bounce events with per-zone LAG window function."""
         ...
 
-    # =================================================================
-    # D-Limit Indicators
-    # =================================================================
+    def get_bounce_references(
+        self,
+        *,
+        pair: str | None = None,
+        regime: str | None = None,
+        min_dt: datetime | None = None,
+    ) -> list[dict]:
+        """Rows from bounce_reference with optional filters."""
+        ...
+
+    # -----------------------------------------------------------------
+    # D-Limit indicators + consolidation
+    # -----------------------------------------------------------------
 
     def get_dlimit(
         self,
@@ -117,12 +240,8 @@ class DataProvider(Protocol):
         *,
         before: datetime | None = None,
     ) -> dict | None:
-        """Fetch most recent D-Limit row. Convenience: limit=1, order desc."""
+        """Fetch most recent D-Limit row."""
         ...
-
-    # =================================================================
-    # Consolidation Signals
-    # =================================================================
 
     def get_consolidation(
         self,
@@ -134,156 +253,12 @@ class DataProvider(Protocol):
         end: datetime | None = None,
         limit: int = 5000,
     ) -> list[dict]:
-        """Fetch Module 7 consolidation signals from year-partitioned tables."""
+        """Fetch Module 7 consolidation signals."""
         ...
 
-    # =================================================================
-    # State (spirit_state key-value store)
-    # =================================================================
-
-    def get_state(self, key: str) -> Any:
-        """Fetch a single value from spirit_state by exact key.
-        Returns the JSONB value (deserialized), or None if not found.
-        """
-        ...
-
-    def put_state(self, key: str, value: Any) -> None:
-        """Upsert a key-value pair into spirit_state."""
-        ...
-
-    def ensure_table(self, table_name: str, create_sql: str) -> bool:
-        """Ensure a table exists. PG: runs DDL if missing. API: no-op (True).
-        Returns True if table exists/was created.
-        """
-        ...
-
-    # =================================================================
-    # Performance
-    # =================================================================
-
-    def get_performance(
-        self,
-        *,
-        pair: str | None = None,
-        strategy: str | None = None,
-        source: str | None = None,
-        run_id: str | None = None,
-        start: datetime | None = None,
-        end: datetime | None = None,
-        limit: int = 5000,
-    ) -> list[dict]:
-        """Fetch strategy_performance rows."""
-        ...
-
-    def write_performance(self, data: dict) -> int:
-        """Insert a single trade result. Returns rows affected."""
-        ...
-
-    def write_performance_batch(self, trades: list[dict]) -> int:
-        """Bulk insert trade results. Returns rows affected."""
-        ...
-
-    def clear_performance(self, *, run_id: str) -> int:
-        """Delete performance rows for a specific run_id. Returns rows deleted."""
-        ...
-
-    # =================================================================
-    # Risk Gate Decisions
-    # =================================================================
-
-    def write_risk_gate(self, data: dict) -> int:
-        """Insert a risk gate decision. Returns rows affected."""
-        ...
-
-    def update_risk_gate_outcome(self, data: dict) -> int:
-        """Update outcome on an existing risk gate decision. Returns rows affected."""
-        ...
-
-    def get_pending_shadow(self, *, limit: int = 100) -> list[dict]:
-        """Fetch risk gate decisions needing shadow outcome evaluation."""
-        ...
-
-    def update_shadow_outcome(self, data: dict) -> int:
-        """Update shadow outcome fields on a risk gate decision."""
-        ...
-
-    # =================================================================
-    # Trade Theses
-    # =================================================================
-
-    def write_thesis(self, data: dict) -> int:
-        """Insert a trade thesis. Returns rows affected."""
-        ...
-
-    def update_thesis_outcome(self, data: dict) -> int:
-        """Update exit/outcome fields on a thesis. Returns rows affected."""
-        ...
-
-    # =================================================================
-    # Scorer Outcomes
-    # =================================================================
-
-    def write_scorer_outcome(self, data: dict) -> int:
-        """Insert a scorer outcome record. Returns rows affected."""
-        ...
-
-    # =================================================================
-    # Heartbeats
-    # =================================================================
-
-    def write_heartbeat(
-        self,
-        daemon_id: str,
-        *,
-        instance: str,
-        status: str = "ok",
-        metadata: dict | None = None,
-        run_id: str = "live",
-    ) -> int:
-        """Upsert a daemon heartbeat. Returns rows affected.
-
-        instance is REQUIRED so pg-mode and api-mode land under the same
-        row per (daemon_id, instance). In api-mode the gateway overrides
-        from the API key; we still send the body field for protocol
-        consistency.
-        """
-        ...
-
-    # =================================================================
-    # Tumbler Scenes
-    # =================================================================
-
-    def write_scene(self, data: dict) -> int:
-        """Upsert a tumbler scene. Returns rows affected."""
-        ...
-
-    # =================================================================
-    # Trajectories
-    # =================================================================
-
-    def get_trajectory_templates(self, pair: str) -> list[dict]:
-        """Fetch trajectory health templates for a pair."""
-        ...
-
-    def get_trajectory_modifiers(self, pair: str) -> list[dict]:
-        """Fetch trajectory zone modifiers for a pair."""
-        ...
-
-    def write_trajectory(self, data: dict) -> int:
-        """Insert a trade trajectory record. Returns rows affected."""
-        ...
-
-    # =================================================================
-    # Pairs
-    # =================================================================
-
-    def get_pairs(self, instance: str | None = None) -> list[dict]:
-        """Fetch active pairs from pair registry."""
-        ...
-
-    # =================================================================
-    # Orderbook
-    # =================================================================
+    # -----------------------------------------------------------------
+    # Orderbook indicators
+    # -----------------------------------------------------------------
 
     def get_orderbook(
         self,
@@ -303,63 +278,87 @@ class DataProvider(Protocol):
         lookback_minutes: int = 15,
         at: datetime | None = None,
     ) -> list[dict]:
-        """Grouped orderbook_events counts over the lookback window.
-
-        Returns list of dicts with keys: event_type, side, count. The
-        caller aggregates event_type→summary field mapping — we keep the
-        provider a thin data-access layer.
-        """
+        """Grouped orderbook_events counts over the lookback window."""
         ...
 
-    # =================================================================
-    # Strategy metrics
-    # =================================================================
+    # -----------------------------------------------------------------
+    # Risk gate + shadow outcomes (IP because risk gate is calibrated
+    # against IP regime/R:R distributions)
+    # -----------------------------------------------------------------
 
-    def get_strategy_metrics(
-        self,
-        strategy_name: str,
-        as_of_date: datetime,
-        *,
-        baseline_days: int = 90,
-        current_days: int = 14,
-        recent_days: int = 7,
-    ) -> dict:
-        """Per-strategy performance metrics + win-streak counts.
-
-        Computes trade count + win-rate over three lookback windows
-        (baseline/current/recent) plus consecutive-win/loss streaks from
-        strategy_performance. Returns a single dict with keys:
-        trades_14d, current_wr, trades_90d, baseline_wr, recent_wr,
-        consecutive_losses, consecutive_wins. Used by the dynamic
-        regime engine's baseline-vs-current scoring.
-        """
+    def write_risk_gate(self, data: dict) -> int:
+        """Insert a risk gate decision."""
         ...
 
-    # =================================================================
-    # Bounce references
-    # =================================================================
-
-    def get_bounce_references(
-        self,
-        *,
-        pair: str | None = None,
-        regime: str | None = None,
-        min_dt: datetime | None = None,
-    ) -> list[dict]:
-        """Fetch rows from bounce_reference with optional filters.
-
-        Returns list of dicts with keys: pair, regime, dt, zone_id,
-        signature_norm (JSONB), forward_mfe_pct, forward_mae_pct,
-        forward_pnl_12h_pct, forward_mfe_time_min, bounce_category,
-        is_winner_12h, forward_trajectory (JSONB). Used by the bounce
-        physics reference cache.
-        """
+    def update_risk_gate_outcome(self, data: dict) -> int:
+        """Update outcome on an existing risk gate decision."""
         ...
+
+    def get_pending_shadow(self, *, limit: int = 100) -> list[dict]:
+        """Fetch risk gate decisions needing shadow outcome evaluation."""
+        ...
+
+    def update_shadow_outcome(self, data: dict) -> int:
+        """Update shadow outcome fields on a risk gate decision."""
+        ...
+
+    # -----------------------------------------------------------------
+    # Trade theses + scorer outcomes (IP lifecycle audit)
+    # -----------------------------------------------------------------
+
+    def write_thesis(self, data: dict) -> int:
+        """Insert a trade thesis."""
+        ...
+
+    def update_thesis_outcome(self, data: dict) -> int:
+        """Update exit/outcome fields on a thesis."""
+        ...
+
+    def write_scorer_outcome(self, data: dict) -> int:
+        """Insert a scorer outcome record."""
+        ...
+
+    # -----------------------------------------------------------------
+    # Tumbler scenes + trajectories (IP observation)
+    # -----------------------------------------------------------------
+
+    def write_scene(self, data: dict) -> int:
+        """Upsert a tumbler scene."""
+        ...
+
+    def get_trajectory_templates(self, pair: str) -> list[dict]:
+        """Fetch trajectory health templates for a pair."""
+        ...
+
+    def get_trajectory_modifiers(self, pair: str) -> list[dict]:
+        """Fetch trajectory zone modifiers for a pair."""
+        ...
+
+    def write_trajectory(self, data: dict) -> int:
+        """Insert a trade trajectory record."""
+        ...
+
+
+# =====================================================================
+# Combined interface — subscription tier implements both
+# =====================================================================
+
+
+@runtime_checkable
+class DataProvider(FrameworkDataProvider, IPDataProvider, Protocol):
+    """Combined framework + IP data access.
+
+    Satisfied by the subscription-tier ApiDataProvider. Free-tier Spirit
+    will only depend on FrameworkDataProvider; code that uses this union
+    type is implicitly subscription-only.
+    """
+    ...
 
 
 # =====================================================================
 # Singleton factory
 # =====================================================================
+
 
 _provider: DataProvider | None = None
 
