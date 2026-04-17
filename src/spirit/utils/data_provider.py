@@ -1,16 +1,13 @@
 """
 DataProvider — Abstract data access for Spirit runtime.
 
-Phase C of the 3-tier architecture (#277). Allows Spirit to run in two modes:
-  - 'pg': Direct PostgreSQL via execute_query() (default, same as before)
-  - 'api': HTTP calls to the API gateway at api.tradebot.live
+Spirit is api-driven: all data access goes through the API gateway.
+pg-mode was removed in the platform pivot (#340).
 
 Usage:
     from spirit.utils.data_provider import get_data_provider
     dp = get_data_provider()
     rows = dp.get_ohlc(pair='XBTUSD', interval=60, limit=100)
-
-The active provider is determined by SPIRIT_DATA_PROVIDER config key.
 """
 
 from __future__ import annotations
@@ -28,9 +25,7 @@ logger = get_logger("data_provider")
 class DataProvider(Protocol):
     """Abstract interface for all Spirit data access (read + write).
 
-    Implementations:
-      - PgDataProvider: Direct PostgreSQL (src/spirit/utils/pg_data_provider.py)
-      - ApiDataProvider: HTTP to API gateway (src/spirit/utils/api_data_provider.py)
+    Implementation: ApiDataProvider (src/spirit/utils/api_data_provider.py).
     """
 
     # =================================================================
@@ -370,40 +365,29 @@ _provider: DataProvider | None = None
 
 
 def get_data_provider() -> DataProvider:
-    """Return the singleton DataProvider instance.
+    """Return the singleton DataProvider instance (api-mode only).
 
-    Created on first call based on SPIRIT_DATA_PROVIDER config:
-      - 'pg' (default): PgDataProvider (direct PostgreSQL)
-      - 'api': ApiDataProvider (HTTP to API gateway)
+    Spirit is api-driven; all data access goes through the gateway.
     """
     global _provider
     if _provider is not None:
         return _provider
 
+    from spirit.utils.api_data_provider import ApiDataProvider
     from spirit.utils.config_loader import get_config
 
-    mode = get_config("SPIRIT_DATA_PROVIDER", "pg")
-
-    if mode == "api":
-        from spirit.utils.api_data_provider import ApiDataProvider
-
-        base_url = get_config("SPIRIT_API_URL", "http://10.0.0.4:8000/v1")
-        api_key = get_config("SPIRIT_API_KEY", "")
-        if not api_key:
-            import os
-            api_key = os.environ.get("SPIRIT_API_KEY", "")
-        if not api_key:
-            raise RuntimeError(
-                "SPIRIT_DATA_PROVIDER=api requires SPIRIT_API_KEY to be set "
-                "(env var or spirit.yaml)"
-            )
-        _provider = ApiDataProvider(base_url=base_url, api_key=api_key)
-        logger.info(f"DataProvider: api → {base_url}")
-    else:
-        from spirit.utils.pg_data_provider import PgDataProvider
-
-        _provider = PgDataProvider()
-        logger.info("DataProvider: pg (direct PostgreSQL)")
+    base_url = get_config("SPIRIT_API_URL", "http://10.0.0.4:8000/v1")
+    api_key = get_config("SPIRIT_API_KEY", "")
+    if not api_key:
+        import os
+        api_key = os.environ.get("SPIRIT_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "SPIRIT_API_KEY must be set (env var or spirit.yaml). "
+            "Run `python3 -m spirit.setup` to configure."
+        )
+    _provider = ApiDataProvider(base_url=base_url, api_key=api_key)
+    logger.info(f"DataProvider: api → {base_url}")
 
     trace_path = get_config("SPIRIT_DATA_PROVIDER_TRACE", "")
     if not trace_path:
