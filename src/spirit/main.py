@@ -1682,24 +1682,7 @@ def main():
         )
         multi_pair = True  # ReplayDataSource is always multi-pair style
     elif args.data_source == 'kraken':
-        if spirit_data_mode == 'pipeline' and event_bus is not None:
-            # Event-driven: pipeline events trigger eval (no Kraken API polling)
-            from spirit.utils.pipeline_data_source import MultiPairPipelineDataSource
-            from spirit.config import PIPELINE_FALLBACK_TIMEOUT
-            logger.info(
-                f"[Pipeline Mode] pairs={pairs} intervals={intervals_list} "
-                f"primary={interval} fallback={PIPELINE_FALLBACK_TIMEOUT}s"
-            )
-            data_source = MultiPairPipelineDataSource(
-                pairs=pairs,
-                intervals=intervals_list,
-                primary_interval=interval,
-                event_bus=event_bus,
-                buffer_size=args.buffer_size,
-                fallback_timeout=PIPELINE_FALLBACK_TIMEOUT,
-            )
-            multi_pair = True
-        elif multi_pair:
+        if multi_pair:
             from spirit.utils.multi_pair_data_source import MultiPairLiveDataSource
             logger.info(f"[MultiPair Live] pairs={pairs} intervals={intervals_list} primary={interval}")
             data_source = MultiPairLiveDataSource(
