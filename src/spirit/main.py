@@ -1555,15 +1555,65 @@ def main():
         from spirit.web import increment_candles as web_inc, record_signal as web_sig, record_decision as web_dec
 
     # ---------------------------------------------------------------
-    # Pipeline event bus
+    # Pipeline event bus (WsEventBus — gateway-fed readiness events)
     # ---------------------------------------------------------------
-    # api-mode Spirit has no event bus yet — WsEventBus lands with #337.
-    # Until then event_bus / readiness_gate stay None; downstream handles
-    # None gracefully (polling OHLC / tolerating stale data).
+    # api-mode Spirit connects to the gateway /v1/events WebSocket for
+    # pipeline readiness. Replay mode skips it (all data already in DB).
+    # Set PIPELINE_EVENT_BUS=none to disable and fall back to polling.
     # ---------------------------------------------------------------
 
     event_bus = None
     readiness_gate = None
+
+    if args.data_source != 'replay':
+        bus_mode = (
+            os.environ.get('PIPELINE_EVENT_BUS')
+            or get_config('PIPELINE_EVENT_BUS', 'ws')
+        ).strip().lower()
+
+        if bus_mode in ('ws', 'auto'):
+            api_url = (
+                get_config('SPIRIT_API_URL', '')
+                or os.environ.get('SPIRIT_API_URL', '')
+            )
+            api_key = (
+                get_config('SPIRIT_API_KEY', '')
+                or os.environ.get('SPIRIT_API_KEY', '')
+            )
+            ws_url_override = (
+                os.environ.get('SPIRIT_WS_URL')
+                or get_config('SPIRIT_WS_URL', '')
+            )
+            if api_url and api_key:
+                from spirit.pipeline import (
+                    DataReadinessGate,
+                    WsEventBus,
+                    derive_ws_url,
+                )
+                ws_url = ws_url_override or derive_ws_url(api_url)
+                event_bus = WsEventBus(url=ws_url, api_key=api_key)
+                event_bus.start()
+
+                readiness_timeout = float(
+                    os.environ.get('PIPELINE_GATE_TIMEOUT')
+                    or get_config('PIPELINE_GATE_TIMEOUT', '45')
+                )
+                readiness_gate = DataReadinessGate(
+                    event_bus=event_bus, timeout=readiness_timeout
+                )
+                logger.info(f"[PIPELINE] WsEventBus connected to {ws_url}")
+            else:
+                logger.warning(
+                    "[PIPELINE] SPIRIT_API_URL/SPIRIT_API_KEY not set — "
+                    "continuing without event bus (polling fallback)"
+                )
+        elif bus_mode == 'none':
+            logger.info("[PIPELINE] PIPELINE_EVENT_BUS=none — event bus disabled")
+        else:
+            logger.warning(
+                f"[PIPELINE] Unknown PIPELINE_EVENT_BUS={bus_mode!r} — "
+                "no event bus created"
+            )
 
     # ---------------------------------------------------------------
     # Create orchestrator
