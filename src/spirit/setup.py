@@ -96,71 +96,52 @@ def main():
     print(f"Project root: {project_root}")
     print()
 
-    # --- Step 1: Data source ---
-    print("--- Step 1: Data Source ---")
-    print("How does this Spirit instance get market data?")
-    print("  1. API gateway (subscriber mode — needs SPIRIT_API_KEY)")
-    print("  2. Direct PostgreSQL (developer mode — needs PG credentials)")
+    # --- Step 1: API gateway ---
+    print("--- Step 1: API Gateway ---")
+    print("Spirit connects to the trading data API. You need an API key.")
     print()
-    data_mode = _prompt("Data source [1/2]", "1")
-    is_api_mode = data_mode == "1"
-
     env_values = {}
     yaml_values = {}
 
-    if is_api_mode:
-        api_key = _prompt("Spirit API key", secret=True)
-        print()
-        print("API gateway:")
-        print("  1. api.tradebot.live (default)")
-        print("  2. Custom URL")
-        print()
-        gw_choice = _prompt("Gateway [1/2]", "1")
-        if gw_choice == "2":
-            api_url = _prompt("Custom gateway URL")
-        else:
-            api_url = "https://api.tradebot.live/v1"
-        # Auto-detect instance name from API key
-        instance = None
-        if api_key:
-            try:
-                import urllib.request
-                import json
-                req = urllib.request.Request(
-                    f"{api_url}/whoami",
-                    headers={
-                        "X-API-Key": api_key,
-                        "User-Agent": "Spirit-Setup/1.0",
-                    },
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read())
-                    instance = data.get("instance")
-                    key_name = data.get("name", "")
-                    print(f"  Authenticated: {key_name} (instance: {instance})")
-            except Exception as e:
-                print(f"  Could not reach gateway: {e}")
-
-        if not instance:
-            instance = _prompt("Instance name (e.g. prod, canary, davy)", "prod")
-
-        yaml_values["SPIRIT_DATA_PROVIDER"] = "api"
-        yaml_values["SPIRIT_API_URL"] = api_url
-        yaml_values["SPIRIT_INSTANCE"] = instance
-        env_values["SPIRIT_API_KEY"] = api_key
+    api_key = _prompt("Spirit API key", secret=True)
+    print()
+    print("API gateway:")
+    print("  1. api.tradebot.live (default)")
+    print("  2. Custom URL")
+    print()
+    gw_choice = _prompt("Gateway [1/2]", "1")
+    if gw_choice == "2":
+        api_url = _prompt("Custom gateway URL")
     else:
-        pg_host = _prompt("PostgreSQL host")
-        pg_user = _prompt("PostgreSQL user", "botuser")
-        pg_pass = _prompt("PostgreSQL password", secret=True)
-        pg_db = _prompt("PostgreSQL database", "trading_bot")
-        instance = _prompt("Instance name", "dev")
+        api_url = "https://api.tradebot.live/v1"
 
-        env_values["POSTGRES_HOST"] = pg_host
-        env_values["POSTGRES_USER"] = pg_user
-        env_values["POSTGRES_PASSWORD"] = pg_pass
-        env_values["POSTGRES_DB"] = pg_db
-        yaml_values["SPIRIT_DATA_PROVIDER"] = "pg"
-        yaml_values["SPIRIT_INSTANCE"] = instance
+    # Auto-detect instance name from API key via /whoami
+    instance = None
+    if api_key:
+        try:
+            import json
+            import urllib.request
+            req = urllib.request.Request(
+                f"{api_url}/whoami",
+                headers={
+                    "X-API-Key": api_key,
+                    "User-Agent": "Spirit-Setup/1.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                instance = data.get("instance")
+                key_name = data.get("name", "")
+                print(f"  Authenticated: {key_name} (instance: {instance})")
+        except Exception as e:
+            print(f"  Could not reach gateway: {e}")
+
+    if not instance:
+        instance = _prompt("Instance name (e.g. prod, canary, davy)", "prod")
+
+    yaml_values["SPIRIT_API_URL"] = api_url
+    yaml_values["SPIRIT_INSTANCE"] = instance
+    env_values["SPIRIT_API_KEY"] = api_key
 
     print()
 
@@ -213,10 +194,7 @@ def main():
     print("To start Spirit:")
     print(f"  cd {project_root}")
     print(f"  set -a && source .env && set +a")
-    if is_api_mode:
-        print(f"  PYTHONPATH=src python3 -m spirit.main --mode paper --no-pause")
-    else:
-        print(f"  PYTHONPATH=src python3 -m spirit.main --mode paper")
+    print(f"  PYTHONPATH=src python3 -m spirit.main --mode paper --no-pause")
     print()
 
 
