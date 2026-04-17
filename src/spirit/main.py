@@ -13,8 +13,11 @@ import faulthandler; faulthandler.enable()
 import json
 import os
 import sys
+import threading
 import time
 import argparse
+from collections import defaultdict
+
 import pandas as pd
 
 from spirit.logger import get_logger
@@ -97,6 +100,17 @@ class SpiritOrchestrator:
         self.readiness_gate = readiness_gate         # DataReadinessGate or None (legacy; kept for replay compat)
         self.freshness_cache = freshness_cache       # PipelineFreshnessCache or None
         self.run_id = run_id                         # 'live' or UUID for replay
+
+        # Per-pair concurrency coordination for the evaluate/monitor critical
+        # section. Event-triggered eval (on_dlimit_ready) and time-triggered
+        # eval (on_new_candle → _evaluate_pair) can both reach _evaluate_pair,
+        # and the monitoring tick runs from the data-source thread — the lock
+        # serialises them so strategies only see one path at a time.
+        self._eval_locks: dict = defaultdict(threading.Lock)
+        # Per-pair idempotency key — candle_dt we last evaluated for. Prevents
+        # double-eval when time-triggered and event-triggered paths both fire
+        # for the same candle (rare but possible near the race boundary).
+        self._last_eval_candle_dt: dict = {}
         self.data_source = None  # set after data source creation
         self.csv_thread = None
         self._instance = get_config('SPIRIT_INSTANCE', 'prod')
@@ -211,10 +225,20 @@ class SpiritOrchestrator:
     # -----------------------------------------------------------------
 
     def _evaluate_pair(self, pair, window_df):
-        """Run strategy evaluation for a specific pair."""
+        """Run strategy evaluation for a specific pair.
+
+        Serialised per-pair — both the time-triggered on_new_candle path
+        and the event-triggered on_dlimit_ready path land here; the lock
+        ensures they don't interleave.
+        """
         if self.data_source and not getattr(self.data_source, 'warmup_complete', True):
             return
 
+        with self._eval_locks[pair]:
+            self._evaluate_pair_locked(pair, window_df)
+
+    def _evaluate_pair_locked(self, pair, window_df):
+        """Body of _evaluate_pair with the per-pair lock already held."""
         ctx = self.context_manager.get(pair)
 
         # Periodic state save — before any early returns so pairs with pending
@@ -253,11 +277,12 @@ class SpiritOrchestrator:
 
             # Pipeline freshness gate (non-blocking): only run entry/full-eval
             # if the D-Limit indicators for this candle have landed. On MISS we
-            # log and skip — no stale-data fallback. Next tick re-checks.
+            # log and skip — no stale-data fallback. The WS-triggered path
+            # (on_dlimit_ready) will re-enter here once the event arrives.
             # Exits run via on_monitoring_tick and are intentionally not gated
             # here (they react to price, not indicators).
+            candle_dt_iso = ctx.health.get('last_candle_time')
             if self.freshness_cache is not None:
-                candle_dt_iso = ctx.health.get('last_candle_time')
                 stage = f"dlimit_{self.interval}m"
                 if candle_dt_iso and not self.freshness_cache.is_fresh(
                     pair, stage, self.interval, candle_dt_iso
@@ -269,9 +294,19 @@ class SpiritOrchestrator:
                     )
                     return
 
+            # Idempotency — skip if we've already evaluated this candle.
+            # Two paths can reach here (time-triggered via on_new_candle,
+            # event-triggered via on_dlimit_ready); the idempotency key
+            # prevents double-eval when both fire close together.
+            last_eval = self._last_eval_candle_dt.get(pair)
+            if candle_dt_iso and last_eval and last_eval >= candle_dt_iso:
+                return
+
             result = strategy.evaluate_trade(
                 pair, mode=self.mode, open_trade=tsm.open_trade
             )
+            if candle_dt_iso:
+                self._last_eval_candle_dt[pair] = candle_dt_iso
             entry_flag = False
             exit_flag = False
             trade_record = None
@@ -664,6 +699,56 @@ class SpiritOrchestrator:
                     self._process_entry(pair, result)
         except Exception as e:
             self._cb_logger.exception(f"[{pair}] Exception in _monitor_pair: {e}")
+
+    # -----------------------------------------------------------------
+    # Event-triggered evaluation (A — #337 close-of-loop)
+    # -----------------------------------------------------------------
+
+    def on_dlimit_ready(self, event) -> None:
+        """Called by WsEventBus when a ``pipeline_dlimit_60m`` event arrives.
+
+        Runs strategy evaluation for ``event.pair`` at ``event.candle_dt``
+        **if** the context has caught up to that candle. This is the
+        event-triggered path that replaces pure time-triggered eval —
+        Spirit now reacts to "data is ready" rather than "clock says
+        there's a new candle" (issue #351 / #337).
+
+        Runs on the WsEventBus dispatch thread. The per-pair lock in
+        ``_evaluate_pair`` serialises it against the time-triggered
+        ``on_new_candle`` path and the monitoring-tick path.
+        """
+        if event.interval_minutes != self.interval:
+            return  # only gate on our signal-interval
+        pair = event.pair
+        if pair not in self.strategies:
+            return
+
+        ctx = self.context_manager.get(pair)
+        if ctx is None:
+            return
+        ctx_candle = ctx.health.get('last_candle_time')
+        if not ctx_candle or ctx_candle < event.candle_dt:
+            # Race: dlimit event arrived before the data source pushed the
+            # matching OHLC candle into context. Skip — the time-triggered
+            # on_new_candle path will run _evaluate_pair when context
+            # catches up; freshness cache is already fresh by then.
+            self._cb_logger.info(
+                f"[{pair}][RACE] {event.stage} ready for candle={event.candle_dt} "
+                f"but ctx at {ctx_candle} — waiting for candle push"
+            )
+            return
+
+        # Idempotency — if the time-triggered path already evaluated this
+        # candle (cache was fresh by then), skip.
+        last_eval = self._last_eval_candle_dt.get(pair)
+        if last_eval and last_eval >= event.candle_dt:
+            return
+
+        self._cb_logger.info(
+            f"[{pair}][READY] {event.stage} for candle={event.candle_dt} — "
+            f"evaluating (event-triggered)"
+        )
+        self._evaluate_pair(pair, window_df=None)
 
     # -----------------------------------------------------------------
     # Legacy single-pair callbacks (backward compat with old data sources)
@@ -1646,6 +1731,16 @@ def main():
     for pair_key, s in strategies.items():
         s.run_id = run_id
 
+    # Subscribe the orchestrator's event-triggered eval hook to the signal
+    # interval's dlimit channel (part A of #351 — evaluate_trade runs when
+    # the pipeline says "data is ready", not when the clock says "top of
+    # hour"). Done after freshness_cache subscription so both receive the
+    # same events; WsEventBus dispatches to all callbacks per channel.
+    #
+    # Attached below after orch is instantiated — safe to subscribe post-
+    # start since the channel is already in the session's subscribe op
+    # (freshness_cache subscribed above).
+
     orch = SpiritOrchestrator(
         context_manager=context_manager,
         strategies=strategies,
@@ -1666,6 +1761,16 @@ def main():
         freshness_cache=freshness_cache,
         run_id=run_id,
     )
+
+    # Event-triggered evaluation: subscribe the orchestrator's dlimit-ready
+    # hook. Runs after orch construction so the callback can reference it.
+    if event_bus is not None:
+        dlimit_channel = f"pipeline_dlimit_{interval}m"
+        event_bus.subscribe(dlimit_channel, orch.on_dlimit_ready)
+        logger.info(
+            f"[PIPELINE] Event-triggered eval wired — orch.on_dlimit_ready "
+            f"subscribed to {dlimit_channel}"
+        )
 
     # ---------------------------------------------------------------
     # Select data source
