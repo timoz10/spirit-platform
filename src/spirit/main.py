@@ -1555,141 +1555,15 @@ def main():
         from spirit.web import increment_candles as web_inc, record_signal as web_sig, record_decision as web_dec
 
     # ---------------------------------------------------------------
-    # Pipeline event bus (live mode only)
+    # Pipeline event bus
+    # ---------------------------------------------------------------
+    # api-mode Spirit has no event bus yet — WsEventBus lands with #337.
+    # Until then event_bus / readiness_gate stay None; downstream handles
+    # None gracefully (polling OHLC / tolerating stale data).
     # ---------------------------------------------------------------
 
     event_bus = None
     readiness_gate = None
-    pipeline_bus_mode = get_config('PIPELINE_EVENT_BUS', 'none')
-    is_live_mode = args.data_source == 'kraken'
-
-    # Auto-disable PgEventBus in api-mode — no PG to LISTEN on (#327)
-    if pipeline_bus_mode == 'pg' and get_config('SPIRIT_DATA_PROVIDER', 'pg') == 'api':
-        logger.info("[PIPELINE] Auto-disabling PgEventBus: api-mode has no PG for LISTEN/NOTIFY")
-        pipeline_bus_mode = 'none'
-
-    spirit_data_mode = get_config('SPIRIT_DATA_MODE', 'kraken_api')
-
-    if pipeline_bus_mode == 'pg' and is_live_mode:
-        try:
-            from spirit.pipeline.pg_event_bus import PgEventBus
-            from spirit.pipeline.readiness_gate import DataReadinessGate
-            from spirit.utils.db_connection import get_listen_connection, get_connection
-
-            readiness_timeout = float(get_config('PIPELINE_READINESS_TIMEOUT', '45'))
-            event_bus = PgEventBus(
-                listen_conn_factory=get_listen_connection,
-                publish_conn_factory=get_connection,
-            )
-
-            # In pipeline data mode, the D-Limit event IS the readiness signal —
-            # no gate needed. In kraken_api mode, keep the gate for backward compat.
-            if spirit_data_mode == 'pipeline':
-                readiness_gate = None
-                logger.info("[Pipeline Mode] Readiness gate skipped (event-driven)")
-            else:
-                readiness_gate = DataReadinessGate(
-                    event_bus=event_bus,
-                    timeout=readiness_timeout,
-                )
-
-            # Wire pipeline events to strategy cache invalidation
-            def _on_dlimit_event(event):
-                strategy = strategies.get(event.pair)
-                if strategy and hasattr(strategy, 'on_pipeline_event'):
-                    try:
-                        strategy.on_pipeline_event(event)
-                    except Exception as e:
-                        logger.debug(f"[PIPELINE] on_pipeline_event error: {e}")
-
-            # Wire pipeline_bounce_physics NOTIFY → hot-reload all live
-            # BounceReferenceStore instances. Full mode does reload_all(),
-            # incremental mode does reload_incremental(watermark) using the
-            # watermark carried in event.metadata. The calibrator emits this
-            # event after every successful run (including no-op heartbeats).
-            def _on_bounce_physics_event(event):
-                try:
-                    from spirit.tumblers.bounce_reference import get_active_stores
-                except Exception as e:
-                    logger.warning(
-                        f"[BOUNCE_REF_RELOAD] Failed to import get_active_stores: {e}"
-                    )
-                    return
-
-                stores = get_active_stores()
-                metadata = getattr(event, 'metadata', {}) or {}
-                mode = metadata.get('mode', 'full')
-                watermark_iso = metadata.get('watermark')
-                n_new = metadata.get('n_new', 0)
-
-                logger.info(
-                    f"[BOUNCE_REF_RELOAD] event received: mode={mode} "
-                    f"n_new={n_new} watermark={watermark_iso} "
-                    f"n_stores={len(stores)}"
-                )
-
-                if not stores:
-                    logger.info(
-                        "[BOUNCE_REF_RELOAD] no live stores in this process — "
-                        "nothing to reload"
-                    )
-                    return
-
-                # Heartbeat emission (n_new=0 incremental) — log and skip
-                # the actual reload to avoid pointless PG queries.
-                if mode == 'incremental' and n_new == 0:
-                    logger.info(
-                        "[BOUNCE_REF_RELOAD] heartbeat (no new bounces) — "
-                        "skipping reload"
-                    )
-                    return
-
-                # Parse watermark for incremental, fall back to full if missing
-                watermark = None
-                if mode == 'incremental' and watermark_iso:
-                    try:
-                        from datetime import datetime as _dt
-                        watermark = _dt.fromisoformat(watermark_iso)
-                    except Exception as e:
-                        logger.warning(
-                            f"[BOUNCE_REF_RELOAD] bad watermark {watermark_iso!r}, "
-                            f"falling back to reload_all: {e}"
-                        )
-                        mode = 'full'
-
-                for store in stores:
-                    try:
-                        if mode == 'incremental' and watermark is not None:
-                            n_added = store.reload_incremental(watermark)
-                            logger.info(
-                                f"[BOUNCE_REF_RELOAD] incremental: +{n_added} refs"
-                            )
-                        else:
-                            store.reload_all()
-                            logger.info(
-                                f"[BOUNCE_REF_RELOAD] full reload: "
-                                f"{store.total_refs} refs total"
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            f"[BOUNCE_REF_RELOAD] reload failed: {e}"
-                        )
-
-            event_bus.subscribe('pipeline_dlimit_60m', _on_dlimit_event)
-            event_bus.subscribe('pipeline_dlimit_15m', _on_dlimit_event)
-            event_bus.subscribe('pipeline_bounce_physics', _on_bounce_physics_event)
-            event_bus.start()
-            logger.info(
-                f"[PIPELINE] Event bus active: mode=pg, "
-                f"readiness_timeout={readiness_timeout}s"
-            )
-        except Exception as e:
-            logger.warning(f"[PIPELINE] Event bus init failed (degrading gracefully): {e}")
-            event_bus = None
-            readiness_gate = None
-    else:
-        if is_live_mode and pipeline_bus_mode != 'pg':
-            logger.info(f"[PIPELINE] Event bus disabled (PIPELINE_EVENT_BUS={pipeline_bus_mode})")
 
     # ---------------------------------------------------------------
     # Create orchestrator
