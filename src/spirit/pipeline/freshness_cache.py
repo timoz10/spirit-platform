@@ -32,8 +32,9 @@ Typical wiring in Spirit's main:
 
 from __future__ import annotations
 
+import enum
 import threading
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from spirit.logger import get_logger
 from spirit.pipeline.event_bus import PipelineEvent
@@ -49,6 +50,20 @@ _GATED_STAGES = frozenset({
     "dlimit_15m",
     "bounce_physics",
 })
+
+
+class FreshnessStatus(enum.Enum):
+    """Outcome of a freshness check, including a 'bus is dead' signal.
+
+    The distinction between PENDING and BUS_DEAD is what drives the log
+    that gets emitted on a miss — see #360. On 2026-04-18 the canary
+    logged ``cache latest=None`` for 11 hours while its WsEventBus
+    thread had died silently; the log gave no signal that the root
+    cause was the bus, not the event timing.
+    """
+    READY = "ready"           # cache has a candle_dt >= requested
+    PENDING = "pending"       # cache empty/stale; bus alive, event may still arrive
+    BUS_DEAD = "bus_dead"     # cache empty/stale AND bus thread not alive — event CANNOT arrive
 
 
 def normalize_candle_dt(candle_dt: Optional[str]) -> Optional[str]:
@@ -81,10 +96,23 @@ class PipelineFreshnessCache:
     ``DataReadinessGate.wait_for_dlimit(timeout=N)`` pattern.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        liveness_check: Optional[Callable[[], bool]] = None,
+    ) -> None:
+        """Create a freshness cache.
+
+        Args:
+            liveness_check: Optional zero-arg callable that returns True iff
+                the push-updating event bus is still alive. If supplied,
+                ``status()`` distinguishes PENDING from BUS_DEAD. If None,
+                ``status()`` assumes the feed is always live — use only for
+                tests or when no event bus is wired.
+        """
         # (pair, stage, interval_minutes) -> normalized candle_dt ISO
         self._latest: Dict[Tuple[str, str, int], str] = {}
         self._lock = threading.Lock()
+        self._liveness_check = liveness_check
 
     # ------------------------------------------------------------------
     # Updates (push path)
@@ -151,6 +179,35 @@ class PipelineFreshnessCache:
         with self._lock:
             latest = self._latest.get((pair, stage, interval_minutes))
         return latest is not None and latest >= need
+
+    def status(
+        self,
+        pair: str,
+        stage: str,
+        interval_minutes: int,
+        need_candle_dt: str,
+    ) -> FreshnessStatus:
+        """Return READY / PENDING / BUS_DEAD for a freshness check.
+
+        Use this instead of ``is_fresh()`` when you want to emit a log on
+        miss that explains WHY the cache is empty. ``is_fresh()`` remains
+        the right choice for the hot path where you only care about the
+        boolean.
+        """
+        if self.is_fresh(pair, stage, interval_minutes, need_candle_dt):
+            return FreshnessStatus.READY
+        if self._liveness_check is None:
+            # No bus wired (tests, non-api-mode) — assume events can still
+            # arrive via whatever mechanism is in use.
+            return FreshnessStatus.PENDING
+        try:
+            alive = bool(self._liveness_check())
+        except Exception as e:
+            # Defensive — a broken liveness check should not mask a real
+            # freshness failure. Degrade to PENDING and log once.
+            logger.warning("[FRESHNESS] liveness_check raised: %s — assuming PENDING", e)
+            alive = True
+        return FreshnessStatus.PENDING if alive else FreshnessStatus.BUS_DEAD
 
     def latest(
         self, pair: str, stage: str, interval_minutes: int

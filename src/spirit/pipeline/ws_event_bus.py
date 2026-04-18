@@ -204,6 +204,19 @@ class WsEventBus:
         self._ready_event.wait(timeout=5)
         logger.info("[START] WsEventBus loop started (url=%s)", self._url)
 
+    def is_alive(self) -> bool:
+        """True iff the event-loop thread is still running.
+
+        Used by ``PipelineFreshnessCache`` to distinguish 'cache empty,
+        waiting for event' from 'cache empty, bus thread has died and
+        events cannot arrive' — the latter is what happened on the
+        canary 2026-04-18 before #358. See #360.
+        """
+        if not self._started:
+            return False
+        t = self._loop_thread
+        return t is not None and t.is_alive()
+
     def stop(self) -> None:
         if not self._started:
             return
