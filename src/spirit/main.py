@@ -1730,6 +1730,16 @@ def main():
                 ):
                     event_bus.subscribe(stage_channel, freshness_cache.record)
 
+                # Route the dlimit health check through the same cache —
+                # api-mode Spirit shouldn't touch PG for freshness reads
+                # (see #361). Offline calibrators that still need PG are
+                # unaffected because they construct their own instance
+                # without calling set_freshness_cache().
+                from spirit.indicators.d_limit_v3.health_check import (
+                    DLimitHealthCheck,
+                )
+                DLimitHealthCheck.set_freshness_cache(freshness_cache)
+
                 event_bus.start()
 
                 logger.info(
