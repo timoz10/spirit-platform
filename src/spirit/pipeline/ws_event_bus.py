@@ -242,8 +242,12 @@ class WsEventBus:
         self._ready_event.set()
         try:
             self._loop.run_until_complete(self._main())
-        except Exception as e:  # pragma: no cover — safety net
-            logger.error("[LOOP] Terminated unexpectedly: %s", e)
+        except BaseException as e:  # pragma: no cover — safety net
+            # BaseException (not Exception) so asyncio.CancelledError propagating
+            # out of the websockets library doesn't kill the loop thread silently.
+            logger.error(
+                "[LOOP] Terminated unexpectedly: %s: %s", type(e).__name__, e,
+            )
 
     async def _main(self) -> None:
         assert self._stop_event is not None
@@ -252,13 +256,16 @@ class WsEventBus:
             try:
                 await self._session()
                 delay = self._reconnect_min
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
+            except BaseException as e:
+                # BaseException catches asyncio.CancelledError raised from deep
+                # inside the websockets library during server-initiated closes.
+                # If the user actually asked us to stop, honour that cancel.
+                if isinstance(e, asyncio.CancelledError) and self._stop_event.is_set():
+                    raise
                 jittered = delay * (1 + random.uniform(-0.25, 0.25))
                 logger.warning(
-                    "[WS] Session ended (%s) — reconnect in %.1fs",
-                    e, jittered,
+                    "[WS] Session ended (%s: %s) — reconnect in %.1fs",
+                    type(e).__name__, e, jittered,
                 )
                 try:
                     await asyncio.wait_for(
