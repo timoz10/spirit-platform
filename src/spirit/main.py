@@ -283,16 +283,27 @@ class SpiritOrchestrator:
             # here (they react to price, not indicators).
             candle_dt_iso = ctx.health.get('last_candle_time')
             if self.freshness_cache is not None:
+                from spirit.pipeline.freshness_cache import FreshnessStatus
                 stage = f"dlimit_{self.interval}m"
-                if candle_dt_iso and not self.freshness_cache.is_fresh(
-                    pair, stage, self.interval, candle_dt_iso
-                ):
-                    latest = self.freshness_cache.latest(pair, stage, self.interval)
-                    self._cb_logger.info(
-                        f"[{pair}][MISS] {stage} not fresh for candle={candle_dt_iso} "
-                        f"(cache latest={latest}) — skip eval, retry next tick"
+                if candle_dt_iso:
+                    status = self.freshness_cache.status(
+                        pair, stage, self.interval, candle_dt_iso
                     )
-                    return
+                    if status == FreshnessStatus.BUS_DEAD:
+                        latest = self.freshness_cache.latest(pair, stage, self.interval)
+                        self._cb_logger.error(
+                            f"[{pair}][MISS][BUS_DEAD] {stage} for candle={candle_dt_iso} "
+                            f"— WsEventBus thread is not alive, events cannot arrive "
+                            f"(cache latest={latest}). Restart required."
+                        )
+                        return
+                    if status == FreshnessStatus.PENDING:
+                        latest = self.freshness_cache.latest(pair, stage, self.interval)
+                        self._cb_logger.info(
+                            f"[{pair}][MISS] {stage} pending for candle={candle_dt_iso} "
+                            f"(cache latest={latest}) — skip eval, retry next tick"
+                        )
+                        return
 
             # Idempotency — skip if we've already evaluated this candle.
             # Two paths can reach here (time-triggered via on_new_candle,
@@ -1706,7 +1717,12 @@ def main():
                 # Freshness cache — push-updated by the WsEventBus dispatch
                 # thread. Subscribe BEFORE start() so the initial session
                 # includes these channels in its subscribe op.
-                freshness_cache = PipelineFreshnessCache()
+                # liveness_check lets the cache distinguish PENDING (bus
+                # alive, event coming) from BUS_DEAD (thread died, event
+                # impossible) — see #360 / canary incident 2026-04-18.
+                freshness_cache = PipelineFreshnessCache(
+                    liveness_check=event_bus.is_alive,
+                )
                 for stage_channel in (
                     'pipeline_dlimit_60m',
                     'pipeline_dlimit_15m',
