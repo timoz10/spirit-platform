@@ -726,22 +726,32 @@ class SpiritOrchestrator:
         ctx = self.context_manager.get(pair)
         if ctx is None:
             return
-        ctx_candle = ctx.health.get('last_candle_time')
-        if not ctx_candle or ctx_candle < event.candle_dt:
+
+        # Normalise both sides before comparing. Context strips the tz suffix
+        # (strftime('%Y-%m-%dT%H:%M:%S')), the daemon emits with +00:00
+        # (datetime.isoformat()). Raw string comparison of the two treats
+        # the shorter (naive) string as less, producing a false RACE every
+        # time ctx happens to land exactly on the hour boundary. See
+        # 2026-04-18 canary incident.
+        from spirit.pipeline.freshness_cache import normalize_candle_dt
+        ctx_candle = normalize_candle_dt(ctx.health.get('last_candle_time'))
+        event_candle = normalize_candle_dt(event.candle_dt)
+        if not ctx_candle or not event_candle or ctx_candle < event_candle:
             # Race: dlimit event arrived before the data source pushed the
             # matching OHLC candle into context. Skip — the time-triggered
             # on_new_candle path will run _evaluate_pair when context
             # catches up; freshness cache is already fresh by then.
             self._cb_logger.info(
                 f"[{pair}][RACE] {event.stage} ready for candle={event.candle_dt} "
-                f"but ctx at {ctx_candle} — waiting for candle push"
+                f"but ctx at {ctx.health.get('last_candle_time')} — waiting for candle push"
             )
             return
 
         # Idempotency — if the time-triggered path already evaluated this
-        # candle (cache was fresh by then), skip.
-        last_eval = self._last_eval_candle_dt.get(pair)
-        if last_eval and last_eval >= event.candle_dt:
+        # candle (cache was fresh by then), skip. Normalise again; last_eval
+        # is stored in ctx format, event.candle_dt is in daemon format.
+        last_eval = normalize_candle_dt(self._last_eval_candle_dt.get(pair))
+        if last_eval and last_eval >= event_candle:
             return
 
         self._cb_logger.info(
