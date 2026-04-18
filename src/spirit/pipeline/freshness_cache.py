@@ -51,11 +51,15 @@ _GATED_STAGES = frozenset({
 })
 
 
-def _normalize_candle_dt(candle_dt: Optional[str]) -> Optional[str]:
+def normalize_candle_dt(candle_dt: Optional[str]) -> Optional[str]:
     """Match the convention used by DataReadinessGate: tz-aware ISO strings
-    end with ``+00:00``. Spirit context sometimes strips the tz suffix; the
-    gateway and daemons emit with ``+00:00``. Align both sides so string
-    comparison works deterministically.
+    end with ``+00:00``. Spirit context sometimes strips the tz suffix
+    (``strftime('%Y-%m-%dT%H:%M:%S')``); the gateway and daemons emit with
+    ``+00:00`` (``datetime.isoformat()``). Without normalising, string
+    comparison of ``"2026-04-18T15:00:00" < "2026-04-18T15:00:00+00:00"``
+    returns True — a silent false-negative that caused the canary RACE
+    regression on 2026-04-18. Use this helper on BOTH sides of any
+    ``candle_dt`` comparison.
     """
     if not candle_dt:
         return None
@@ -64,6 +68,10 @@ def _normalize_candle_dt(candle_dt: Optional[str]) -> Optional[str]:
     if len(candle_dt) >= 19 and "+" not in candle_dt[10:] and "-" not in candle_dt[11:]:
         return candle_dt + "+00:00"
     return candle_dt
+
+
+# Backwards-compat alias for internal callers that imported the private name.
+_normalize_candle_dt = normalize_candle_dt
 
 
 class PipelineFreshnessCache:
