@@ -350,3 +350,9 @@ class ApiDataProvider:
             "pair": pair,
             "calibrate_before": _iso(calibrate_before),
         })
+
+    def get_entry_quality_calibration(self, dimension, *, as_of=None):
+        return self._get("/calibrations/entry-quality", {
+            "dimension": dimension,
+            "as_of": _iso(as_of),
+        })
