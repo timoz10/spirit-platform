@@ -342,7 +342,10 @@ class WsEventBus:
 
         if entries:
             await ws.send(json.dumps({"op": "subscribe", "channels": entries}))
-            logger.debug("[WS] Sent subscribe for %d channels", len(entries))
+            logger.info(
+                "[WS] Sent subscribe: %s",
+                [e["name"] for e in entries],
+            )
 
     async def _reader_loop(self, ws) -> None:
         try:
@@ -366,7 +369,7 @@ class WsEventBus:
         if msg_type == "event":
             self._dispatch_event(msg)
         elif msg_type == "ready":
-            logger.debug("[WS] ready channel=%s", msg.get("channel"))
+            logger.info("[WS] Ready: %s", msg.get("channel"))
         elif msg_type == "error":
             logger.warning(
                 "[WS] error channel=%s msg=%s",
