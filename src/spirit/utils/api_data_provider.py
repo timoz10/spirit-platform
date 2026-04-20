@@ -333,3 +333,14 @@ class ApiDataProvider:
             "regime": regime,
             "min_dt": _iso(min_dt),
         })
+
+    # ==================================================================
+    # Calibration inputs (#338)
+    # ==================================================================
+
+    def get_cooldown_calibration(self, pair, *, interval=60, lookback_months=12):
+        return self._get("/calibrations/cooldown", {
+            "pair": pair,
+            "interval": interval,
+            "lookback_months": lookback_months,
+        })
