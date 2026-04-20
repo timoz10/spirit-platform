@@ -369,6 +369,21 @@ class IPDataProvider(Protocol):
         """
         ...
 
+    def get_entry_quality_calibration(
+        self,
+        dimension: str,
+        *,
+        as_of: datetime | None = None,
+    ) -> list[dict]:
+        """Bucketed win-rate + MFE rows for EntryQualityCalibrator.
+
+        `dimension` must be one of: slope_angle, zone_touches,
+        touch_gap_hours, displacement_24h, trend_end_confidence.
+
+        Returns rows with keys: regime, bucket_idx, count, win_rate, avg_mfe.
+        """
+        ...
+
 
 # =====================================================================
 # Combined interface — subscription tier implements both
