@@ -344,3 +344,9 @@ class ApiDataProvider:
             "interval": interval,
             "lookback_months": lookback_months,
         })
+
+    def get_risk_gate_calibration(self, pair, *, calibrate_before=None):
+        return self._get("/calibrations/risk-gate", {
+            "pair": pair,
+            "calibrate_before": _iso(calibrate_before),
+        })

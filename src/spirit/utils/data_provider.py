@@ -356,6 +356,19 @@ class IPDataProvider(Protocol):
         """
         ...
 
+    def get_risk_gate_calibration(
+        self,
+        pair: str,
+        *,
+        calibrate_before: datetime | None = None,
+    ) -> list[dict]:
+        """Resolved risk-gate decisions for RiskGateCalibrator.
+
+        Returns rows with keys: regime, rr_ratio, approved, outcome_is_win,
+        shadow_hit_target, shadow_hit_stop.
+        """
+        ...
+
 
 # =====================================================================
 # Combined interface — subscription tier implements both
