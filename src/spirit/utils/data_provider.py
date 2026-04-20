@@ -338,6 +338,24 @@ class IPDataProvider(Protocol):
         """Insert a trade trajectory record."""
         ...
 
+    # -----------------------------------------------------------------
+    # Calibration inputs (#338)
+    # -----------------------------------------------------------------
+
+    def get_cooldown_calibration(
+        self,
+        pair: str,
+        *,
+        interval: int = 60,
+        lookback_months: int = 12,
+    ) -> list[dict]:
+        """Break → next-bounce recovery events for CooldownCalibrator.
+
+        Returns rows with keys: pair, break_time, break_price, price_level,
+        recovery_hours, depth_pct, capture_rate.
+        """
+        ...
+
 
 # =====================================================================
 # Combined interface — subscription tier implements both
