@@ -28,6 +28,7 @@ import asyncio
 import json
 import random
 import threading
+import time
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
@@ -95,6 +96,7 @@ class WsEventBus:
         reconnect_min: float = 1.0,
         reconnect_max: float = 60.0,
         open_timeout: float = 10.0,
+        health_log_interval: float = 300.0,
     ) -> None:
         if not url:
             raise ValueError("WsEventBus: url is required")
@@ -106,6 +108,7 @@ class WsEventBus:
         self._reconnect_min = reconnect_min
         self._reconnect_max = reconnect_max
         self._open_timeout = open_timeout
+        self._health_log_interval = health_log_interval
 
         self._subscribers: Dict[str, List[EventCallback]] = defaultdict(list)
         self._raw_subscribers: Dict[str, List[Callable[[str, str], None]]] = defaultdict(list)
@@ -119,6 +122,15 @@ class WsEventBus:
         self._current_ws = None  # type: Any
         self._ready_event = threading.Event()
         self._started = False
+
+        # Observability counters for the periodic [WS-HEALTH] log (#389).
+        # A zombie subscription shows as connected=True with last_event_age_s
+        # growing past the expected max — this is what we lacked when Bug B
+        # landed on 2026-04-20 and the silence went unnoticed for 32 min.
+        self._last_event_ts: Optional[float] = None
+        self._last_pong_ts: Optional[float] = None
+        self._sent_count: int = 0
+        self._recv_count: int = 0
 
     # ------------------------------------------------------------------
     # PipelineEventBus protocol
@@ -264,30 +276,81 @@ class WsEventBus:
 
     async def _main(self) -> None:
         assert self._stop_event is not None
-        delay = self._reconnect_min
+        # Periodic [WS-HEALTH] emitter runs for the whole lifetime of the bus,
+        # across reconnect cycles — so even during zombie state (session
+        # "connected" but no events) we get a regular signal.
+        health_task = asyncio.create_task(self._health_log_loop())
+        try:
+            delay = self._reconnect_min
+            while not self._stop_event.is_set():
+                try:
+                    await self._session()
+                    delay = self._reconnect_min
+                except BaseException as e:
+                    # BaseException catches asyncio.CancelledError raised from deep
+                    # inside the websockets library during server-initiated closes.
+                    # If the user actually asked us to stop, honour that cancel.
+                    if isinstance(e, asyncio.CancelledError) and self._stop_event.is_set():
+                        raise
+                    jittered = delay * (1 + random.uniform(-0.25, 0.25))
+                    logger.warning(
+                        "[WS] Session ended (%s: %s) — reconnect in %.1fs",
+                        type(e).__name__, e, jittered,
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(), timeout=jittered
+                        )
+                        return  # stop requested during backoff
+                    except asyncio.TimeoutError:
+                        pass
+                    delay = min(delay * 2, self._reconnect_max)
+        finally:
+            health_task.cancel()
+            try:
+                await health_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def _health_log_loop(self) -> None:
+        """Periodic [WS-HEALTH] emitter — see #389.
+
+        One INFO line per health_log_interval seconds showing connection,
+        subscription, last-event-age, last-pong-age, send/recv counts.
+        Makes zombie state grep-able (connected=True + last_event_age_s
+        growing past the expected max) without needing burst-rate anomaly
+        to reveal it.
+        """
+        assert self._stop_event is not None
         while not self._stop_event.is_set():
             try:
-                await self._session()
-                delay = self._reconnect_min
-            except BaseException as e:
-                # BaseException catches asyncio.CancelledError raised from deep
-                # inside the websockets library during server-initiated closes.
-                # If the user actually asked us to stop, honour that cancel.
-                if isinstance(e, asyncio.CancelledError) and self._stop_event.is_set():
-                    raise
-                jittered = delay * (1 + random.uniform(-0.25, 0.25))
-                logger.warning(
-                    "[WS] Session ended (%s: %s) — reconnect in %.1fs",
-                    type(e).__name__, e, jittered,
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self._health_log_interval,
                 )
-                try:
-                    await asyncio.wait_for(
-                        self._stop_event.wait(), timeout=jittered
-                    )
-                    return  # stop requested during backoff
-                except asyncio.TimeoutError:
-                    pass
-                delay = min(delay * 2, self._reconnect_max)
+                return  # stop requested
+            except asyncio.TimeoutError:
+                pass
+            self._log_health_snapshot()
+
+    def _log_health_snapshot(self) -> None:
+        now = time.time()
+        last_event_age = (
+            f"{now - self._last_event_ts:.0f}"
+            if self._last_event_ts is not None else "None"
+        )
+        last_pong_age = (
+            f"{now - self._last_pong_ts:.0f}"
+            if self._last_pong_ts is not None else "None"
+        )
+        with self._lock:
+            channels = len({*self._subscribers.keys(), *self._raw_subscribers.keys()})
+        connected = self._current_ws is not None
+        logger.info(
+            "[WS-HEALTH] connected=%s channels=%d last_event_age_s=%s "
+            "last_pong_age_s=%s sent=%d recv=%d",
+            connected, channels, last_event_age, last_pong_age,
+            self._sent_count, self._recv_count,
+        )
 
     async def _session(self) -> None:
         """Open one WS session and serve until close or stop."""
@@ -342,6 +405,7 @@ class WsEventBus:
 
         if entries:
             await ws.send(json.dumps({"op": "subscribe", "channels": entries}))
+            self._sent_count += 1
             logger.info(
                 "[WS] Sent subscribe: %s",
                 [e["name"] for e in entries],
@@ -365,6 +429,7 @@ class WsEventBus:
     # ------------------------------------------------------------------
 
     async def _handle_message(self, ws, msg: dict) -> None:
+        self._recv_count += 1
         msg_type = msg.get("type")
         if msg_type == "event":
             self._dispatch_event(msg)
@@ -385,17 +450,21 @@ class WsEventBus:
             # Gateway heartbeat — reply with op=pong so the server's pinger
             # has a real proof-of-life signal. Older servers that don't know
             # "op=pong" will reply with ErrorMsg("unknown op"), which is still
-            # inbound traffic and still counts as liveness.
+            # inbound traffic and still counts as liveness. The inbound ping
+            # itself is proof of gateway liveness, so stamp last_pong_ts.
+            self._last_pong_ts = time.time()
             try:
                 await ws.send(json.dumps({"op": "pong"}))
+                self._sent_count += 1
             except Exception as e:
                 logger.debug("[WS] pong send failed: %s", e)
         elif msg_type == "pong":
-            pass
+            self._last_pong_ts = time.time()
         else:
             logger.debug("[WS] unknown type=%s", msg_type)
 
     def _dispatch_event(self, msg: dict) -> None:
+        self._last_event_ts = time.time()
         ws_channel = msg.get("channel") or ""
         pg_channel = ws_channel.split(".", 1)[-1] if "." in ws_channel else ws_channel
         try:
@@ -525,6 +594,7 @@ class WsEventBus:
                 return
             try:
                 await ws.send(json.dumps({"op": "subscribe", "channels": entries}))
+                self._sent_count += 1
             except Exception as e:
                 logger.debug("[WS] Incremental subscribe failed: %s", e)
 
