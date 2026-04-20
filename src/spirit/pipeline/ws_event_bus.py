@@ -352,7 +352,7 @@ class WsEventBus:
                 except json.JSONDecodeError:
                     logger.warning("[WS] Non-JSON message: %r", str(raw)[:200])
                     continue
-                self._handle_message(msg)
+                await self._handle_message(ws, msg)
         except ConnectionClosed:
             # Normal close — bubble up so _main can reconnect.
             raise
@@ -361,7 +361,7 @@ class WsEventBus:
     # Message dispatch
     # ------------------------------------------------------------------
 
-    def _handle_message(self, msg: dict) -> None:
+    async def _handle_message(self, ws, msg: dict) -> None:
         msg_type = msg.get("type")
         if msg_type == "event":
             self._dispatch_event(msg)
@@ -379,9 +379,14 @@ class WsEventBus:
                 msg.get("after"), msg.get("current"),
             )
         elif msg_type == "ping":
-            # Gateway heartbeat — noop ack (server doesn't require a reply;
-            # connection liveness is checked on the send side).
-            pass
+            # Gateway heartbeat — reply with op=pong so the server's pinger
+            # has a real proof-of-life signal. Older servers that don't know
+            # "op=pong" will reply with ErrorMsg("unknown op"), which is still
+            # inbound traffic and still counts as liveness.
+            try:
+                await ws.send(json.dumps({"op": "pong"}))
+            except Exception as e:
+                logger.debug("[WS] pong send failed: %s", e)
         elif msg_type == "pong":
             pass
         else:
