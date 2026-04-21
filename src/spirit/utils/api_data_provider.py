@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from spirit.logger import get_logger
 
@@ -64,6 +66,24 @@ class ApiDataProvider:
         self._session = requests.Session()
         self._session.headers["X-API-Key"] = api_key
         self._timeout = timeout
+
+        # Retry on connection-level errors only (stale keep-alive on low-cadence
+        # writes like the hourly heartbeat manifests as RemoteDisconnected —
+        # see #399). Do NOT retry on 4xx or unexpected 5xx; those should
+        # surface to the caller.
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=2,
+            backoff_factor=0.3,
+            status_forcelist=(502, 503, 504),
+            allowed_methods=frozenset(["GET", "POST", "PUT", "DELETE"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
+
         logger.info(f"ApiDataProvider connected to {self._url}")
 
     # ------------------------------------------------------------------
