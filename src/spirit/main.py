@@ -1333,19 +1333,25 @@ def main():
             logger.warning(f"[VERSION] Failed to stamp version to spirit_state: {e}")
 
     # Record startup heartbeat for daemon health monitoring (#225)
+    # run_id is not yet defined at this point in startup (assigned ~90 lines down
+    # after arg parsing); the `mode_label != 'replay'` gate above guarantees
+    # we're in a live/paper path, so LIVE_RUN_ID is always correct here.
     if mode_label != 'replay':
         try:
             from spirit.pipeline.daemon_health import record_heartbeat
+            from spirit.utils.run_manager import LIVE_RUN_ID
             ok = record_heartbeat(f'spirit:{instance}', status='starting', metadata={
                 'version': __version__,
                 'git_sha': git_hash,
                 'strategy': strategy_name,
                 'mode': mode_label,
-            }, run_id=run_id, instance=instance)
+            }, run_id=LIVE_RUN_ID, instance=instance)
             if ok:
                 logger.info(f"[HEARTBEAT] Registered spirit:{instance} (starting)")
+            else:
+                logger.warning(f"[HEARTBEAT] Startup heartbeat for spirit:{instance} was not recorded")
         except Exception as e:
-            logger.debug(f"[HEARTBEAT] Startup heartbeat failed: {e}")
+            logger.warning(f"[HEARTBEAT] Startup heartbeat failed: {e}")
 
     # Start web dashboard if enabled
     if get_config('SPIRIT_WEB', '').lower() in ('1', 'true', 'yes'):
