@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import socket
 import threading
 import time
 from collections import defaultdict
@@ -67,6 +68,46 @@ _PIPELINE_EVENT_FIELDS = frozenset({
 })
 
 
+def _configure_tcp_keepalive(ws: Any) -> None:
+    """Enable TCP keepalive on the underlying socket (#389 belt-and-braces).
+
+    If the application-level watchdog fails to detect a zombie socket (e.g.
+    during a GC stall or an obscure asyncio state), the kernel will probe
+    the connection and raise ECONNRESET when the peer is gone. That fires
+    as ``ConnectionClosed`` in the reader loop → reconnect.
+
+    Linux only — skipped silently on macOS/BSD where ``TCP_KEEPIDLE`` has a
+    different name or is unavailable. Failures are non-fatal; the watchdog
+    is the primary defence.
+
+    Tunables chosen for ~5-minute worst-case detection:
+      ``TCP_KEEPIDLE=60``   start probing after 60s of quiet
+      ``TCP_KEEPINTVL=30``  probe every 30s
+      ``TCP_KEEPCNT=4``     drop after 4 failed probes (2 min of probing)
+    """
+    try:
+        transport = ws.transport
+        if transport is None:
+            return
+        sock = transport.get_extra_info("socket")
+        if sock is None:
+            return
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for opt_name, value in (
+            ("TCP_KEEPIDLE", 60),
+            ("TCP_KEEPINTVL", 30),
+            ("TCP_KEEPCNT", 4),
+        ):
+            opt = getattr(socket, opt_name, None)
+            if opt is not None:
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, opt, value)
+                except OSError:
+                    pass
+    except Exception as e:
+        logger.debug("[WS] TCP keepalive config skipped: %s", e)
+
+
 def derive_ws_url(api_url: str) -> str:
     """Convert an http(s) API base URL into the ws(s) /events URL.
 
@@ -97,6 +138,7 @@ class WsEventBus:
         reconnect_max: float = 60.0,
         open_timeout: float = 10.0,
         health_log_interval: float = 300.0,
+        inactivity_timeout: float = 90.0,
     ) -> None:
         if not url:
             raise ValueError("WsEventBus: url is required")
@@ -109,6 +151,7 @@ class WsEventBus:
         self._reconnect_max = reconnect_max
         self._open_timeout = open_timeout
         self._health_log_interval = health_log_interval
+        self._inactivity_timeout = inactivity_timeout
 
         self._subscribers: Dict[str, List[EventCallback]] = defaultdict(list)
         self._raw_subscribers: Dict[str, List[Callable[[str, str], None]]] = defaultdict(list)
@@ -129,6 +172,10 @@ class WsEventBus:
         # landed on 2026-04-20 and the silence went unnoticed for 32 min.
         self._last_event_ts: Optional[float] = None
         self._last_pong_ts: Optional[float] = None
+        # Any inbound frame (event, ping, pong, ready, error, gap, unknown).
+        # Used by the inactivity watchdog to distinguish "live but quiet" from
+        # "abandoned socket with no exception" — #389 zombie pattern.
+        self._last_activity_ts: Optional[float] = None
         self._sent_count: int = 0
         self._recv_count: int = 0
 
@@ -342,14 +389,18 @@ class WsEventBus:
             f"{now - self._last_pong_ts:.0f}"
             if self._last_pong_ts is not None else "None"
         )
+        last_activity_age = (
+            f"{now - self._last_activity_ts:.0f}"
+            if self._last_activity_ts is not None else "None"
+        )
         with self._lock:
             channels = len({*self._subscribers.keys(), *self._raw_subscribers.keys()})
         connected = self._current_ws is not None
         logger.info(
             "[WS-HEALTH] connected=%s channels=%d last_event_age_s=%s "
-            "last_pong_age_s=%s sent=%d recv=%d",
+            "last_pong_age_s=%s last_activity_age_s=%s sent=%d recv=%d",
             connected, channels, last_event_age, last_pong_age,
-            self._sent_count, self._recv_count,
+            last_activity_age, self._sent_count, self._recv_count,
         )
 
     async def _session(self) -> None:
@@ -363,6 +414,10 @@ class WsEventBus:
             close_timeout=5,
         ) as ws:
             self._current_ws = ws
+            # Stamp initial activity on the handshake itself so the watchdog
+            # doesn't fire before any server frame arrives.
+            self._last_activity_ts = time.time()
+            _configure_tcp_keepalive(ws)
             logger.info("[WS] Connected to %s", self._url)
 
             try:
@@ -371,9 +426,10 @@ class WsEventBus:
                 assert self._stop_event is not None
                 stop_task = asyncio.create_task(self._stop_event.wait())
                 reader_task = asyncio.create_task(self._reader_loop(ws))
+                watchdog_task = asyncio.create_task(self._inactivity_watchdog(ws))
 
                 done, pending = await asyncio.wait(
-                    {stop_task, reader_task},
+                    {stop_task, reader_task, watchdog_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 for t in pending:
@@ -384,6 +440,47 @@ class WsEventBus:
                         raise exc
             finally:
                 self._current_ws = None
+
+    async def _inactivity_watchdog(self, ws) -> None:
+        """Force-close the socket if no server frame has arrived for too long.
+
+        The #389 zombie pattern: gateway container force-recreated, old socket
+        abandoned with no FIN / RST. Python's asyncio has no event to fire on;
+        the reader loop waits forever in ``recv()``. This watchdog polls the
+        activity timestamp every ``inactivity_timeout / 3`` seconds and, when
+        nothing has been received for ``inactivity_timeout``, closes the
+        WebSocket itself — which raises ``ConnectionClosed`` in the reader
+        loop and drops us back into the reconnect backoff in ``_main``.
+
+        The gateway's app-level pinger fires every 30s; 90s (default) is a
+        safe 3x headroom for transient network stalls without false positives.
+        """
+        assert self._stop_event is not None
+        # Poll at 1/3 of the timeout, but at least once per second so short
+        # timeouts (tests, tight SLAs) don't coast on a stale activity ts.
+        poll = max(self._inactivity_timeout / 3.0, 1.0)
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=poll)
+                return
+            except asyncio.TimeoutError:
+                pass
+
+            last = self._last_activity_ts
+            if last is None:
+                continue
+            idle = time.time() - last
+            if idle > self._inactivity_timeout:
+                logger.warning(
+                    "[WS] Inactivity watchdog: no server frame for %.0fs "
+                    "(> %.0fs) — closing socket to force reconnect (#389)",
+                    idle, self._inactivity_timeout,
+                )
+                try:
+                    await ws.close(code=1011, reason="inactivity-timeout")
+                except Exception as e:
+                    logger.debug("[WS] Watchdog close failed: %s", e)
+                return
 
     async def _resubscribe_all(self, ws) -> None:
         """Send a single subscribe op covering every registered channel."""
@@ -430,6 +527,7 @@ class WsEventBus:
 
     async def _handle_message(self, ws, msg: dict) -> None:
         self._recv_count += 1
+        self._last_activity_ts = time.time()
         msg_type = msg.get("type")
         if msg_type == "event":
             self._dispatch_event(msg)
