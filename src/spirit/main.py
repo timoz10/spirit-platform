@@ -111,6 +111,12 @@ class SpiritOrchestrator:
         # double-eval when time-triggered and event-triggered paths both fire
         # for the same candle (rare but possible near the race boundary).
         self._last_eval_candle_dt: dict = {}
+        # Heartbeat cadence — gate on wall-clock seconds, not a candle-count
+        # modulo. The old `% 10` gate over per-pair counters was effectively
+        # unreachable in normal paper runs, leaving daemon_heartbeats stale
+        # for hours. See issue #409.
+        self._last_heartbeat_ts: float = 0.0
+        self._heartbeat_min_interval_s: float = 60.0
         self.data_source = None  # set after data source creation
         self.csv_thread = None
         self._instance = get_config('SPIRIT_INSTANCE', 'prod')
@@ -141,10 +147,17 @@ class SpiritOrchestrator:
 
         Called from on_pair_candle so that every routing path (legacy and
         Spine registry) keeps spirit:{instance} fresh in daemon_heartbeats.
+
+        Cadence is gated on wall-clock time via ``_heartbeat_min_interval_s``
+        (default 60s). The old gate of ``candles_processed % 10`` was
+        effectively unreachable in normal paper runs, leaving the heartbeat
+        row stale for hours and making it useless as a liveness signal.
+        See issue #409.
         """
         if self.run_id != 'live':
             return
-        if ctx.health['candles_processed'] % 10 != 0:
+        now = time.monotonic()
+        if now - self._last_heartbeat_ts < self._heartbeat_min_interval_s:
             return
         try:
             from spirit.pipeline.daemon_health import record_heartbeat
@@ -181,6 +194,7 @@ class SpiritOrchestrator:
                     break
             record_heartbeat(f'spirit:{self._instance}', status='ok', metadata=metadata,
                             run_id=self.run_id, instance=self._instance)
+            self._last_heartbeat_ts = now
         except Exception:
             pass
 
