@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import requests
@@ -24,6 +24,17 @@ logger = get_logger("api_data_provider")
 def _iso(dt: datetime | None) -> str | None:
     """Convert datetime to ISO string for query params."""
     return dt.isoformat() if dt else None
+
+
+def _json_default(obj: Any) -> Any:
+    # requests' default json= encoder can't handle datetime/date. Writes
+    # like record_trade() pass tz-aware datetimes directly; the gateway
+    # parses ISO strings back on the other side (Rule 11 round-trip).
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, date):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def _looks_like_iso_datetime(s: str) -> bool:
@@ -109,7 +120,10 @@ class ApiDataProvider:
     def _post(self, path: str, data: dict) -> int:
         """POST request, return rows_affected."""
         resp = self._session.post(
-            f"{self._url}{path}", json=data, timeout=self._timeout,
+            f"{self._url}{path}",
+            data=json.dumps(data, default=_json_default),
+            headers={"Content-Type": "application/json"},
+            timeout=self._timeout,
         )
         resp.raise_for_status()
         return resp.json().get("rows_affected", 0)
@@ -117,7 +131,10 @@ class ApiDataProvider:
     def _put(self, path: str, data: dict) -> int:
         """PUT request, return rows_affected."""
         resp = self._session.put(
-            f"{self._url}{path}", json=data, timeout=self._timeout,
+            f"{self._url}{path}",
+            data=json.dumps(data, default=_json_default),
+            headers={"Content-Type": "application/json"},
+            timeout=self._timeout,
         )
         resp.raise_for_status()
         return resp.json().get("rows_affected", 0)
