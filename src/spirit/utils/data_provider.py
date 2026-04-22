@@ -394,6 +394,21 @@ class IPDataProvider(Protocol):
         """
         ...
 
+    def get_volatility_context(
+        self,
+        pair: str,
+        interval: int,
+        *,
+        as_of: datetime | None = None,
+    ) -> dict | None:
+        """ATR aggregates for DynamicRegimeEngine.get_volatility_context.
+
+        Returns a dict with keys atr_14d, atr_30d, atr_90d — or None if no
+        rows were available in the 90-day window. Client applies regime
+        classification (`low`/`normal`/`high`/`extreme`).
+        """
+        ...
+
 
 # =====================================================================
 # Combined interface — subscription tier implements both
