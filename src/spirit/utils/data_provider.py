@@ -409,6 +409,18 @@ class IPDataProvider(Protocol):
         """
         ...
 
+    def get_composite_outcomes(
+        self,
+        *,
+        calibrate_before: datetime | None = None,
+    ) -> list[dict]:
+        """Per-trade outcome rows for CompositeThresholdCalibrator.
+
+        Returns rows with keys: pair, regime, composite_score, is_win,
+        mfe_pct. Client runs the per-regime threshold sweep.
+        """
+        ...
+
 
 # =====================================================================
 # Combined interface — subscription tier implements both

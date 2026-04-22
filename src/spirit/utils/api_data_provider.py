@@ -386,3 +386,8 @@ class ApiDataProvider:
             "interval": interval,
             "as_of": _iso(as_of),
         })
+
+    def get_composite_outcomes(self, *, calibrate_before=None):
+        return self._get("/calibrations/composite-outcomes", {
+            "calibrate_before": _iso(calibrate_before),
+        })
