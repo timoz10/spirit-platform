@@ -379,3 +379,10 @@ class ApiDataProvider:
 
     def get_bounce_signature_norm_stats(self):
         return self._get("/calibrations/bounce-signature-norm", None)
+
+    def get_volatility_context(self, pair, interval, *, as_of=None):
+        return self._get_one("/calibrations/volatility-context", {
+            "pair": pair,
+            "interval": interval,
+            "as_of": _iso(as_of),
+        })
