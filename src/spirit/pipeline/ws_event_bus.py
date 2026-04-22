@@ -570,12 +570,7 @@ class WsEventBus:
         except (TypeError, ValueError):
             event_id = 0
         payload = msg.get("payload") or {}
-        # Diagnostic: every event that reaches the reader. Needed because
-        # most per-channel callbacks log at DEBUG (freshness_cache.record)
-        # and only on_dlimit_ready (60m only) logs at INFO — so 15m/bounce
-        # receipts were invisible. Keep until the #377 fanout investigation
-        # closes; low volume (handfuls/hour) so no log flood.
-        logger.info(
+        logger.debug(
             "[WS] event ch=%s event_id=%d pair=%s candle=%s",
             ws_channel, event_id,
             payload.get("pair") if isinstance(payload, dict) else "?",
