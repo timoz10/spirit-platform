@@ -376,3 +376,6 @@ class ApiDataProvider:
             "dimension": dimension,
             "as_of": _iso(as_of),
         })
+
+    def get_bounce_signature_norm_stats(self):
+        return self._get("/calibrations/bounce-signature-norm", None)
