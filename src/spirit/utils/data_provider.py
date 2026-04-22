@@ -384,6 +384,16 @@ class IPDataProvider(Protocol):
         """
         ...
 
+    def get_bounce_signature_norm_stats(self) -> list[dict]:
+        """Percentile norm stats over bounce_reference for SignatureExtractor.
+
+        Returns one row per (pair, regime, dim) with keys:
+        pair, regime, dim, count, min, max, p25, p50, p75.
+        Client applies MIN_SAMPLES_PER_DIM threshold and derives
+        `stats_source` provenance.
+        """
+        ...
+
 
 # =====================================================================
 # Combined interface — subscription tier implements both
