@@ -166,8 +166,15 @@ def main():
     else:
         yaml_values["SPIRIT_EXCHANGE"] = "none"
 
-    # Defaults — safe out of the box, change later in spirit.yaml or CLI flags
-    yaml_values["SPIRIT_PAIRS"] = '"XBTUSD"'
+    # Pair selection — explicit prompt (don't silently default to 1 pair, see #396)
+    print()
+    print("Trading pairs (which markets should Spirit watch?):")
+    print("  Available: XBTUSD, ETHUSD, SOLUSD, ATOMUSD, INJUSD, FETUSD, JUPUSD")
+    print("  Suggested: XBTUSD,ETHUSD,SOLUSD  (3 pairs is a reasonable starting set)")
+    pairs_in = _prompt("Pairs (comma-separated)", default="XBTUSD,ETHUSD,SOLUSD")
+    yaml_values["SPIRIT_PAIRS"] = f'"{pairs_in}"'
+
+    # Strategy + mode defaults — safe out of the box
     yaml_values["SPIRIT_STRATEGY"] = "zone_bounce"
     yaml_values["SPIRIT_MODE"] = "paper"
 
@@ -188,8 +195,9 @@ def main():
     print("=" * 60)
     print()
     print("Defaults applied:")
-    print("  Pairs: XBTUSD        (edit SPIRIT_PAIRS in spirit.yaml)")
-    print("  Mode:  paper          (use --mode live when ready)")
+    print(f"  Pairs:    {pairs_in}")
+    print("  Strategy: zone_bounce   (or write your own — see docs/reference/platform/WRITING_A_STRATEGY.md)")
+    print("  Mode:     paper          (use --mode live when ready)")
     print()
     print("To start Spirit:")
     print(f"  cd {project_root}")
