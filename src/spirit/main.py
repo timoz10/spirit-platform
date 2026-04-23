@@ -1522,7 +1522,7 @@ def main():
     is_spine = False
     first_strategy = next(iter(strategies.values()), None) if strategies else None
     if first_strategy is not None:
-        from spirit.strategies.spine import SpineStrategy
+        from spirit.strategies.experimental.spine import SpineStrategy
         is_spine = isinstance(first_strategy, SpineStrategy)
 
     if is_spine and first_strategy is not None:
