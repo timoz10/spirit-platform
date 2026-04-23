@@ -16,6 +16,10 @@ from typing import Any, Dict, Optional
 
 from spirit.utils.config_loader import get_config
 
+# Built-in strategy registry — production + experimental.
+# User strategies live in ~/.spirit/strategies/ (or $SPIRIT_STRATEGIES_DIR)
+# and are resolved at runtime; see _load_user_strategy() below.
+
 from spirit.logger import get_logger
 logger = get_logger("strategy_config")
 
@@ -30,27 +34,27 @@ _STRATEGY_REGISTRY = {
     },
     "regime_engine": {
         "aliases": {"regime", "decision_engine"},
-        "module": "spirit.strategies.regime_engine",
+        "module": "spirit.strategies.experimental.regime_engine",
         "class": "RegimeEngineStrategy",
     },
     "test": {
         "aliases": {"test_algo"},
-        "module": "spirit.strategies.test_algo",
+        "module": "spirit.strategies.experimental.test_algo",
         "class": "TestStrategy",
     },
     "macd_cross": {
         "aliases": {"macd_full", "macd_full_algo", "macd_1.0", "macd_1_0"},
-        "module": "spirit.strategies.macd_cross",
+        "module": "spirit.strategies.experimental.macd_cross",
         "class": "MACD_full_algo",
     },
     "spine": {
         "aliases": {"multi", "orchestrator"},
-        "module": "spirit.strategies.spine",
+        "module": "spirit.strategies.experimental.spine",
         "class": "SpineStrategy",
     },
     "rsi_reversion": {
         "aliases": {"rsi", "rsi_mean_reversion"},
-        "module": "spirit.strategies.rsi_reversion",
+        "module": "spirit.strategies.experimental.rsi_reversion",
         "class": "RsiReversionStrategy",
     },
 }
@@ -76,6 +80,65 @@ def get_spine_config() -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"Failed to load spine config from YAML: {e}")
         return {}
+
+
+def _user_strategies_dir() -> str:
+    """Return the user strategies directory (default ~/.spirit/strategies/)."""
+    return os.path.expanduser(
+        os.environ.get("SPIRIT_STRATEGIES_DIR", "~/.spirit/strategies")
+    )
+
+
+def _load_user_strategy(name: str):
+    """Load a strategy class from ~/.spirit/strategies/<name>.py.
+
+    Looks for a class subclassing BaseStrategy in the file. Returns the
+    class object, or None if the file doesn't exist or no suitable class
+    is found.
+
+    Convention: the file may contain multiple classes; this returns the
+    first concrete (non-abstract) BaseStrategy subclass. Callers can
+    enforce naming by, for example, only defining one strategy per file.
+    """
+    import importlib.util
+    import inspect
+
+    user_dir = _user_strategies_dir()
+    file_path = os.path.join(user_dir, f"{name}.py")
+    if not os.path.exists(file_path):
+        return None
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"spirit_user_strategies.{name}", file_path
+        )
+        if spec is None or spec.loader is None:
+            logger.error(f"Cannot create import spec for {file_path}")
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        logger.error(f"User strategy '{name}' failed to import from {file_path}: {e}")
+        return None
+
+    from spirit.strategies.base import BaseStrategy
+    for _, obj in inspect.getmembers(mod, inspect.isclass):
+        # Skip imports of BaseStrategy itself, abstracts, and out-of-module classes
+        if obj is BaseStrategy:
+            continue
+        if not issubclass(obj, BaseStrategy):
+            continue
+        if obj.__module__ != mod.__name__:
+            continue
+        if inspect.isabstract(obj):
+            continue
+        logger.info(f"User strategy '{name}' resolved to {obj.__name__} in {file_path}")
+        return obj
+
+    logger.error(
+        f"User strategy file {file_path} contains no concrete BaseStrategy subclass"
+    )
+    return None
 
 
 def _parse_params(env_key: str = "SPIRIT_STRATEGY_PARAMS") -> Dict[str, Any]:
@@ -111,38 +174,45 @@ def get_strategy(extra_params: Optional[Dict[str, Any]] = None) -> Optional[Any]
         logger.warning("SPIRIT_STRATEGY not set. Running in monitor-only mode (no trades).")
         return None
 
-    # Resolve alias → canonical
-    canonical = _ALIAS_MAP.get(name)
-    if canonical is None:
-        available = sorted(_ALIAS_MAP.keys())
-        logger.error(
-            f"Unknown strategy '{name}'. "
-            f"Available: {', '.join(available)}"
-        )
-        return None
-
-    entry = _STRATEGY_REGISTRY[canonical]
     params = _parse_params()
     if extra_params:
         params.update(extra_params)
 
-    # Attempt import
-    try:
-        import importlib
-        mod = importlib.import_module(entry["module"])
-        cls = getattr(mod, entry["class"])
-    except ImportError as e:
-        logger.error(
-            f"Strategy '{canonical}' requested but module '{entry['module']}' "
-            f"failed to import: {e}"
-        )
-        return None
-    except AttributeError:
-        logger.error(
-            f"Strategy '{canonical}' module loaded but class '{entry['class']}' "
-            f"not found in {entry['module']}"
-        )
-        return None
+    # Resolve: built-in registry first, then user dir (~/.spirit/strategies/<name>.py)
+    canonical = _ALIAS_MAP.get(name)
+    cls = None
+    if canonical is not None:
+        entry = _STRATEGY_REGISTRY[canonical]
+        try:
+            import importlib
+            mod = importlib.import_module(entry["module"])
+            cls = getattr(mod, entry["class"])
+        except ImportError as e:
+            logger.error(
+                f"Strategy '{canonical}' requested but module '{entry['module']}' "
+                f"failed to import: {e}"
+            )
+            return None
+        except AttributeError:
+            logger.error(
+                f"Strategy '{canonical}' module loaded but class '{entry['class']}' "
+                f"not found in {entry['module']}"
+            )
+            return None
+    else:
+        # Try user strategies directory — for "build and throw away" workflow.
+        # See docs/reference/platform/WRITING_A_STRATEGY.md
+        cls = _load_user_strategy(name)
+        if cls is None:
+            available = sorted(_ALIAS_MAP.keys())
+            user_dir = _user_strategies_dir()
+            logger.error(
+                f"Unknown strategy '{name}'. "
+                f"Built-in: {', '.join(available)}. "
+                f"User dir checked: {user_dir}"
+            )
+            return None
+        canonical = name  # for the success log line below
 
     # Instantiate — drop extra_params keys the constructor doesn't accept
     try:
