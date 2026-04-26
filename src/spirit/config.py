@@ -14,8 +14,10 @@ import os
 from spirit.utils.config_loader import get_config
 
 # --- Base directory resolution ---
-# Default to the repository root (directory containing this file)
-DEFAULT_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Repo layout: <repo>/src/spirit/config.py — repo root is three dirs up.
+# Resolving from the package dir would land logs/ and the SQLite DB inside
+# src/spirit/, which then gets shipped in the docker build context (see #466).
+DEFAULT_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BASE_DIR = os.environ.get("KRAKEN_BOT_BASE_DIR", DEFAULT_BASE_DIR)
 
 # --- Paths (overridable via env) ---
