@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 import requests
@@ -45,16 +45,26 @@ def _looks_like_iso_datetime(s: str) -> bool:
 def _parse_value(val):
     """Convert API response value to match psycopg2 RealDictCursor output.
 
-    - ISO timestamp strings → tz-aware datetime (matches PG TIMESTAMPTZ)
+    - ISO timestamp strings → tz-aware datetime in **UTC** (Rule 11 contract)
     - Numeric strings → float (matches PG NUMERIC cast)
     - Everything else unchanged
+
+    Datetimes are always returned as tz-aware UTC regardless of how the
+    server formatted the offset. Downstream code that builds string keys
+    via `strftime` must be safe to compare against UTC-normalised lookup
+    keys; see #488 for the DST trap this avoids.
     """
     if not isinstance(val, str):
         return val
 
     if _looks_like_iso_datetime(val):
         try:
-            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt
         except ValueError:
             pass
 
