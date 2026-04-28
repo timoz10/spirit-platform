@@ -399,6 +399,24 @@ class SpiritOrchestrator:
                             if _atc.get('entry_context'):
                                 trade_record.entry_context = _atc['entry_context']
 
+            # Field-coverage guard (#489 #1, #493): the freshness cache validates
+            # that the WS event arrived, not that the subsequent data fetch returned
+            # a complete row. If critical D-Limit columns came back NULL despite the
+            # cache being READY, the gateway fetch raced against the daemon's commit
+            # — log loudly so the silent-NULL case is visible. Does not block the
+            # write; that's the deliberate trade-off until #493 ships.
+            if entry_flag and trade_record is not None and getattr(trade_record, 'entry_context', None):
+                _sig = trade_record.entry_context.get('signature', {}) or {}
+                _missing = set(_sig.get('missing') or [])
+                _critical_missing = _missing & {'slope_angle', 'capture_rate'}
+                if _critical_missing:
+                    self._cb_logger.warning(
+                        f"[{pair}][FIELD-COVERAGE] Entry signal missing critical D-Limit fields: "
+                        f"{sorted(_critical_missing)} (regime={_sig.get('regime')}, "
+                        f"n_dims={_sig.get('n_dims')}, candle={candle_dt_iso}). "
+                        f"Cache READY but fetch returned NULL — suspected fetch race. See #493."
+                    )
+
             if entry_flag and trade_record is not None:
                 # Route limit orders through pending system, market orders immediate
                 order_type = getattr(trade_record, 'order_type', None) or 'market'
