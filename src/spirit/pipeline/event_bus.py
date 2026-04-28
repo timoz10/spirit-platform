@@ -8,9 +8,18 @@ Implementations: PgEventBus (Pro), future InMemoryEventBus (Lite).
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
+
+# PG NOTIFY payloads are capped at 8000 bytes (NOTIFY_PAYLOAD_MAX_LENGTH).
+# Leave a 1000-byte safety margin: above this, drop `row` and log a warning
+# so we never publish a malformed-truncated payload. Client falls back to a
+# direct PG fetch when `row` is absent (#493 stage 3).
+_NOTIFY_PAYLOAD_SAFETY_BYTES = 7000
+
+_size_logger = logging.getLogger("pipeline_event_bus")
 
 
 @dataclass
@@ -26,9 +35,25 @@ class PipelineEvent:
     rows_affected: int = 0
     duration_ms: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    row: Optional[Dict[str, Any]] = None  # canonical stage-row payload (#493)
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self))
+        data = asdict(self)
+        payload = json.dumps(data, default=str)
+
+        if len(payload.encode("utf-8")) > _NOTIFY_PAYLOAD_SAFETY_BYTES and data.get("row"):
+            _size_logger.warning(
+                "[PAYLOAD-SIZE] %s %s candle=%s exceeded %d-byte safety threshold "
+                "(%d bytes) — dropping `row`; client will fall back to fetch",
+                self.stage, self.pair, self.candle_dt,
+                _NOTIFY_PAYLOAD_SAFETY_BYTES, len(payload.encode("utf-8")),
+            )
+            data["row"] = None
+            if isinstance(data.get("metadata"), dict):
+                data["metadata"] = {**data["metadata"], "row": None}
+            payload = json.dumps(data, default=str)
+
+        return payload
 
     @classmethod
     def from_json(cls, payload: str) -> PipelineEvent:
