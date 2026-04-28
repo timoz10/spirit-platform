@@ -405,8 +405,20 @@ class SpiritOrchestrator:
             # cache being READY, the gateway fetch raced against the daemon's commit
             # — log loudly so the silent-NULL case is visible. Does not block the
             # write; that's the deliberate trade-off until #493 ships.
+            #
+            # The signature lives at entry_context.key_match.signature (populated
+            # by bounce_physics_matcher.match()). #494 originally read
+            # entry_context.signature directly — that key never existed, so the
+            # guard was structurally inert. Production database inspection
+            # (2026-04-28, post-#494 deploy) confirmed every CX22 trade for the
+            # last 5 days had `key_match.signature.missing` containing
+            # ['slope_angle','capture_rate','trend_end_confidence'] yet zero
+            # FIELD-COVERAGE warnings fired. The fallback to the top-level
+            # 'signature' key is belt-and-braces — covers any caller that might
+            # pre-populate the signature at the legacy path.
             if entry_flag and trade_record is not None and getattr(trade_record, 'entry_context', None):
-                _sig = trade_record.entry_context.get('signature', {}) or {}
+                _km = trade_record.entry_context.get('key_match') or {}
+                _sig = _km.get('signature') or trade_record.entry_context.get('signature') or {}
                 _missing = set(_sig.get('missing') or [])
                 _critical_missing = _missing & {'slope_angle', 'capture_rate'}
                 if _critical_missing:
