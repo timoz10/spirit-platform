@@ -809,9 +809,35 @@ class SpiritOrchestrator:
         if last_eval and last_eval >= event_candle:
             return
 
+        # Stage 3 of #493: hand the event to the strategy so it can refresh
+        # its D-Limit cache from event.row before we evaluate. Log marker
+        # `via=event.payload` when the strategy will use the pushed row,
+        # `via=fetch` when it will fall back to a PG fetch.
+        strategy = self.strategies.get(pair)
+        via = "fetch"
+        row = getattr(event, 'row', None)
+        if not isinstance(row, dict):
+            md = getattr(event, 'metadata', None) or {}
+            if isinstance(md, dict) and isinstance(md.get('row'), dict):
+                row = md['row']
+            else:
+                row = None
+        if isinstance(row, dict) and all(
+            row.get(f) is not None
+            for f in ('slope_angle', 'capture_rate', 'trend_state')
+        ):
+            via = "event.payload"
+        if strategy is not None and hasattr(strategy, 'on_pipeline_event'):
+            try:
+                strategy.on_pipeline_event(event)
+            except Exception as e:
+                self._cb_logger.warning(
+                    f"[{pair}] strategy.on_pipeline_event raised: {e}"
+                )
+
         self._cb_logger.info(
             f"[{pair}][READY] {event.stage} for candle={event.candle_dt} — "
-            f"evaluating (event-triggered)"
+            f"evaluating (event-triggered) via={via}"
         )
         self._evaluate_pair(pair, window_df=None)
 
