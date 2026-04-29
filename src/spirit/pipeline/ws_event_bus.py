@@ -65,6 +65,7 @@ _PIPELINE_EVENT_FIELDS = frozenset({
     "rows_affected",
     "duration_ms",
     "metadata",
+    "row",  # canonical indicator-row payload (#493 stage 3)
 })
 
 
