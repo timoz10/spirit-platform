@@ -295,6 +295,12 @@ class ApiDataProvider:
     def update_thesis_outcome(self, data):
         return self._put("/theses", data)
 
+    def update_thesis_checks(self, data):
+        return self._put("/theses/checks", data)
+
+    def get_thesis_calibration_data(self, limit=2000):
+        return self._get("/calibrations/theses", {"limit": limit})
+
     # ==================================================================
     # Scorer Outcomes
     # ==================================================================
