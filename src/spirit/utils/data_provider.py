@@ -314,6 +314,18 @@ class IPDataProvider(Protocol):
         """Update exit/outcome fields on a thesis."""
         ...
 
+    def update_thesis_checks(self, data: dict) -> int:
+        """Update in-trade thesis_checks JSONB on an open thesis (#524)."""
+        ...
+
+    def get_thesis_calibration_data(self, limit: int = 2000) -> list[dict]:
+        """Recent completed theses for ThesisCalibrator buffer rebuild (#527).
+
+        Returns rows with: pair, thesis_type, thesis_validated, actual_pnl_pct,
+        actual_mfe_pct, expected_mfe_median.
+        """
+        ...
+
     def write_scorer_outcome(self, data: dict) -> int:
         """Insert a scorer outcome record."""
         ...
