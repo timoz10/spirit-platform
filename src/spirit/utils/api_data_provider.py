@@ -301,6 +301,9 @@ class ApiDataProvider:
     def get_thesis_calibration_data(self, limit=2000):
         return self._get("/calibrations/theses", {"limit": limit})
 
+    def write_regime_decision(self, data):
+        return self._post("/regime-decisions", data)
+
     # ==================================================================
     # Scorer Outcomes
     # ==================================================================

@@ -330,6 +330,10 @@ class IPDataProvider(Protocol):
         """Insert a scorer outcome record."""
         ...
 
+    def write_regime_decision(self, data: dict) -> int:
+        """Insert a regime classification audit row (#526)."""
+        ...
+
     # -----------------------------------------------------------------
     # Tumbler scenes + trajectories (IP observation)
     # -----------------------------------------------------------------
