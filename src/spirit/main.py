@@ -1448,6 +1448,10 @@ def main():
                         help='Include monitoring intervals (1m) in replay for dynamic exit')
     parser.add_argument('--run-tag', type=str, default=None,
                         help='Human-readable label for this replay run (e.g. "baseline")')
+    parser.add_argument('--run-id', type=str, default=None,
+                        help='Explicit run_id (UUID) to use instead of auto-generation. '
+                             'Used by CI replay-determinism gate so the diff script can '
+                             'find the rows without scraping logs (#522).')
     parser.add_argument('--list-runs', action='store_true',
                         help='Print replay run table and exit')
     parser.add_argument('--delete-run', type=str, default=None, metavar='RUN_ID',
@@ -1505,7 +1509,7 @@ def main():
     from spirit.utils.run_manager import LIVE_RUN_ID
     if args.replay:
         from spirit.utils.run_manager import generate_run_id, register_run
-        run_id = generate_run_id()
+        run_id = args.run_id or generate_run_id()
     else:
         run_id = LIVE_RUN_ID
 
