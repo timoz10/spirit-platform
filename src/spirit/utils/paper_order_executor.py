@@ -90,8 +90,18 @@ class PaperOrderExecutor(OrderExecutor):
         self.cash = float(value) - position_value
 
     def _next_order_id(self) -> str:
+        """Mint a deterministic paper-mode order id.
+
+        Format: ``paper-{seq:06d}`` where seq is a per-instance monotonic
+        counter. The wall-clock prefix the previous version used was
+        non-deterministic across runs and broke replay log diffs (#521).
+        Uniqueness is guaranteed by the counter alone within a run; PG
+        uniqueness constraints (strategy_performance, risk_gate_decisions)
+        are keyed by ``(strategy_name, pair, entry_timestamp, run_id, instance)``,
+        not order_id, so the change is safe.
+        """
         self._seq += 1
-        return f"paper-{int(time.time())}-{self._seq}"
+        return f"paper-{self._seq:06d}"
 
     def _get_ticker(self, pair: str = None) -> dict:
         from spirit.exchange import get_exchange_provider
