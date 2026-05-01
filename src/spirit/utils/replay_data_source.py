@@ -186,13 +186,23 @@ class ReplayDataSource:
         candles interleave correctly by time (e.g., one 60m callback fires
         for every 60 1m callbacks).
 
+        Tie-break: when multiple (pair, interval) share the same timestamp,
+        the candidate is selected by tuple comparison (ts, pair, interval).
+        This pins eval order to alphabetical pair → ascending interval
+        regardless of `self.pairs` iteration order, so two replay runs with
+        the same data emit candles in byte-identical sequence (#523). The
+        prior `ts < best[0]` strict comparator silently kept whichever
+        pair came first in iteration order, leaving the eval order at the
+        mercy of any caller change to pair list construction.
+
         Candles before start_date are silently skipped (they exist for warmup).
         """
         if self._stopped:
             raise StopIteration
 
         while True:
-            # Find the (pair, interval) with the earliest next candle
+            # Find the (pair, interval) with the earliest next candle.
+            # Tuple comparison gives deterministic tie-breaks (#523).
             best = None  # (timestamp, pair, interval)
             for pair in self.pairs:
                 for itvl in self.intervals:
@@ -200,8 +210,9 @@ class ReplayDataSource:
                     next_ptr = self._pointers[pair][itvl] + 1
                     if next_ptr < len(df):
                         ts = df.iloc[next_ptr]['datetime']
-                        if best is None or ts < best[0]:
-                            best = (ts, pair, itvl)
+                        candidate = (ts, pair, itvl)
+                        if best is None or candidate < best:
+                            best = candidate
 
             if best is None:
                 raise StopIteration
