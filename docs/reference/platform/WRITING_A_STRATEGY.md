@@ -546,7 +546,7 @@ The project is in transition — the public-facing repo for user strategies is b
 - **Internal users (Tim, Davy):** GitHub Issues on `timoz10/Bot`. Tag with `strategy-help`.
 - **External users (when paid tiers open):** A new public `spirit-platform` repo will host issues, examples, and a knowledge base. The exact URL ships with the public launch.
 
-We're also building a knowledge base on `tradebot.live` with searchable how-tos, plus an LLM-context file so you can point Cursor or Claude Code at Spirit and get accurate strategy-writing help. Both are post-v2.2.0.
+For AI-assisted authoring, point your coding LLM (Cursor, Claude Code, Copilot) at [`STRATEGY_LLM_CONTEXT.md`](STRATEGY_LLM_CONTEXT.md) — a dense, machine-readable version of this contract designed for that workflow. We're also building a searchable knowledge base on `tradebot.live` with how-tos, planned post-v2.2.0.
 
 For now, if you're stuck: open an issue with the strategy file attached, the log lines around the failure, and what you expected to happen.
 
@@ -611,6 +611,7 @@ Once #500 ships, dev backtest output moves to `/v1/dev/performance` and `public.
 
 ## See also
 
+- [`STRATEGY_LLM_CONTEXT.md`](STRATEGY_LLM_CONTEXT.md) — dense LLM-targeted companion for AI-assisted strategy authoring
 - [`PLATFORM_API.md`](PLATFORM_API.md) — full HTTP+WS API contract + return types
 - [`PERMISSIONS.md`](PERMISSIONS.md) — tier matrix, instance scoping, RLS
 - [`USER_LIFECYCLE.md`](USER_LIFECYCLE.md) — how your key + instance work
