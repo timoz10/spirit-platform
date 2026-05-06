@@ -132,8 +132,13 @@ def _check_exchange_keys() -> CheckResult:
         )
 
 
-def _check_env_vars(skip_kraken: bool = False) -> CheckResult:
-    """Verify required environment variables / config values are set."""
+def _check_env_vars(skip_kraken: bool = False, tier: str = "") -> CheckResult:
+    """Verify required environment variables / config values are set.
+
+    Free-tier (`tier == 'free'`) skips the SPIRIT_API_KEY requirement —
+    Free runs entirely against the local SQLite + direct exchange REST
+    and never authenticates against the gateway.
+    """
     from spirit.utils.config_loader import get_config
 
     # Secrets: must come from env vars (not YAML)
@@ -145,16 +150,18 @@ def _check_env_vars(skip_kraken: bool = False) -> CheckResult:
     if 'KRAKEN_API_KEY' in missing and os.environ.get('KRAKEN_API_KEY_FILE'):
         missing.remove('KRAKEN_API_KEY')
 
-    # api-mode requires a gateway API key
-    api_key = get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
-    if not api_key:
-        missing.append('SPIRIT_API_KEY')
+    # Plus/Pro tiers require a gateway API key. Free tier does not.
+    if tier != "free":
+        api_key = get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
+        if not api_key:
+            missing.append('SPIRIT_API_KEY')
 
     # Config: can come from env var OR YAML
     config_keys = ['SPIRIT_STRATEGY']
     missing += [v for v in config_keys if not get_config(v)]
 
-    total = len(secrets) + len(config_keys) + 1
+    api_key_count = 0 if tier == "free" else 1
+    total = len(secrets) + len(config_keys) + api_key_count
     if missing:
         return CheckResult(
             name='env_vars',
@@ -198,7 +205,21 @@ def _check_disk_space() -> CheckResult:
         )
 
 
-def run_preflight(skip_kraken: bool = False) -> PreflightResult:
+def _resolve_tier() -> str:
+    """Read `SPIRIT_TIER` from env or config, normalised to lowercase.
+
+    Returns '' (empty string) when unset — preserves the original
+    Plus/Pro-default behaviour for callers that don't pass `tier`.
+    """
+    from spirit.utils.config_loader import get_config
+
+    tier = (get_config("SPIRIT_TIER", "") or "").strip().lower()
+    if not tier:
+        tier = os.environ.get("SPIRIT_TIER", "").strip().lower()
+    return tier
+
+
+def run_preflight(skip_kraken: bool = False, tier: str | None = None) -> PreflightResult:
     """
     Run all pre-flight checks. Returns PreflightResult.
 
@@ -206,11 +227,24 @@ def run_preflight(skip_kraken: bool = False) -> PreflightResult:
     WARN failures are logged but do not block startup.
 
     skip_kraken: If True, skip Kraken key check (e.g. paper/replay mode).
+    tier:        Spirit tier ('free' / 'subscription' / 'pro' / ''). When
+                 None (default), resolved from SPIRIT_TIER env/config.
+                 Free tier skips the gateway connectivity + SPIRIT_API_KEY
+                 checks — Free runs entirely local-plus-exchange-direct
+                 and never reaches the gateway.
     """
+    if tier is None:
+        tier = _resolve_tier()
+
     checks = [
-        _check_env_vars(skip_kraken=skip_kraken),
-        _check_api_gateway_connectivity(),
+        _check_env_vars(skip_kraken=skip_kraken, tier=tier),
     ]
+
+    # Gateway connectivity is a Plus/Pro concern. Free tier doesn't talk
+    # to the gateway at all (CompositeDataProvider routes reads to the
+    # exchange and writes to local SQLite).
+    if tier != "free":
+        checks.append(_check_api_gateway_connectivity())
 
     if not skip_kraken:
         checks.append(_check_exchange_keys())
