@@ -168,8 +168,28 @@ class SpiritContext:
         else:
             df = df.tail(self.max_rows)
 
-        self.ohlc_df = df.reset_index(drop=True)
-        logger.info(f"[CONTEXT] Warmup complete: {len(self.ohlc_df)} rows")
+        # Merge with existing ohlc_df rather than overwrite (#572).
+        # Multi-interval warmup calls warmup() once per interval; the
+        # previous overwrite-everything semantics dropped rows from the
+        # other intervals on every call. Now: drop only rows for the
+        # interval being warmed up, keep everything else, concat.
+        with self._lock:
+            if (
+                not self.ohlc_df.empty
+                and 'interval' in self.ohlc_df.columns
+            ):
+                # Keep rows for OTHER intervals (not the one being warmed).
+                keep_mask = self.ohlc_df['interval'] != int(interval)
+                preserved = self.ohlc_df[keep_mask].copy()
+                self.ohlc_df = pd.concat(
+                    [preserved, df], ignore_index=True
+                ).reset_index(drop=True)
+            else:
+                self.ohlc_df = df.reset_index(drop=True)
+        logger.info(
+            f"[CONTEXT] Warmup complete: {len(self.ohlc_df)} rows "
+            f"(this interval={interval}: {len(df)} rows)"
+        )
 
     def append_candle(self, candle: dict, interval: int = 60):
         """
