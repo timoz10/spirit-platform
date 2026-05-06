@@ -29,7 +29,7 @@ LOG_FILE = os.environ.get("LOG_FILE", os.path.join(BASE_DIR, "logs", "spirit_sys
 
 # --- Logging ---
 # Logging level: 'INFO', 'DEBUG', 'WARNING', 'ERROR', 'CRITICAL'
-LOGGING_LEVEL = get_config('LOGGING_LEVEL', os.environ.get('LOG_LEVEL', 'DEBUG'))
+LOGGING_LEVEL = get_config('LOGGING_LEVEL', os.environ.get('LOG_LEVEL', 'INFO'))
 
 # --- Kraken / OHLC settings ---
 KRAKEN_PAIR = get_config('KRAKEN_PAIR', 'XBTUSD')
