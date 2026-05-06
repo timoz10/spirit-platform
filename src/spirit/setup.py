@@ -76,6 +76,93 @@ def _write_yaml(yaml_path: str, values: dict):
         f.writelines(updated_lines)
 
 
+def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
+    """Free-tier branch — no gateway, local SQLite, exchange-direct OHLC.
+
+    Writes:
+      SPIRIT_TIER=free, SPIRIT_INSTANCE, SPIRIT_SQLITE_PATH (optional),
+      SPIRIT_PAIRS, SPIRIT_STRATEGY, SPIRIT_MODE
+    """
+    env_values: dict = {}
+    yaml_values: dict = {"SPIRIT_TIER": "free"}
+
+    print()
+    print("--- Free tier ---")
+    print("Free-tier Spirit runs entirely locally:")
+    print("  - Reads OHLC directly from the exchange (Kraken at launch)")
+    print("  - Stores trade outcomes + state in a local SQLite file")
+    print("  - No API gateway required, no credentials beyond exchange keys")
+    print()
+    print("D-Limit zones, scorer, and risk-gate calibration are NOT included")
+    print("on Free. Bring your own strategy or use the bundled SMA example.")
+    print()
+
+    instance = _prompt("Instance name (e.g. local, alpha)", "local")
+    yaml_values["SPIRIT_INSTANCE"] = instance
+
+    default_db = os.path.expanduser(f"~/.spirit/{instance}/spirit.db")
+    sqlite_path = _prompt("SQLite database path", default_db)
+    if sqlite_path != default_db:
+        yaml_values["SPIRIT_SQLITE_PATH"] = sqlite_path
+
+    print()
+    print("Exchange: Kraken (the only one bundled at v2.3.0).")
+    print("Exchange API credentials (leave blank for paper-mode-only):")
+    ex_key = _prompt("Exchange API key (EXCHANGE_API_KEY)", secret=True)
+    ex_secret = _prompt("Exchange API secret (EXCHANGE_API_SECRET)", secret=True)
+    if ex_key:
+        env_values["EXCHANGE_API_KEY"] = ex_key
+    if ex_secret:
+        env_values["EXCHANGE_API_SECRET"] = ex_secret
+
+    print()
+    print("Trading pairs (which markets should Spirit watch?):")
+    print("  Bundled:   XBTUSD, ETHUSD, SOLUSD, ATOMUSD")
+    pairs_in = _prompt("Pairs (comma-separated)", default="XBTUSD,ETHUSD")
+    yaml_values["SPIRIT_PAIRS"] = f'"{pairs_in}"'
+
+    print()
+    print("Strategy:")
+    print("  1. sma_crossover  (bundled example, paper-mode-by-default)")
+    print("  2. Custom         (drop your own under ~/.spirit/strategies/)")
+    strat_choice = _prompt("Strategy [1/2]", "1")
+    if strat_choice == "2":
+        strat_name = _prompt("Strategy module name (without .py)")
+        yaml_values["SPIRIT_STRATEGY"] = strat_name
+    else:
+        yaml_values["SPIRIT_STRATEGY"] = "sma_crossover"
+
+    yaml_values["SPIRIT_MODE"] = "paper"
+
+    print()
+    print("--- Writing Configuration ---")
+    os.makedirs(yaml_dir, exist_ok=True)
+    _write_yaml(yaml_path, yaml_values)
+    print(f"  Written: {yaml_path}")
+    if env_values:
+        _write_env(env_path, env_values)
+        print(f"  Written: {env_path}")
+
+    print()
+    print("=" * 60)
+    print("  Free-tier setup complete!")
+    print("=" * 60)
+    print()
+    print("Defaults applied:")
+    print(f"  Tier:     free")
+    print(f"  Pairs:    {pairs_in}")
+    print(f"  Strategy: {yaml_values['SPIRIT_STRATEGY']}")
+    print("  Mode:     paper  (use --mode live when ready, after thorough testing)")
+    print()
+    print("Local data:")
+    print(f"  SQLite:   {sqlite_path}")
+    print()
+    print("Upgrade path:")
+    print("  Plus / Pro tiers add D-Limit zones, scorer, and risk-gate calibration")
+    print("  via the API gateway. See https://tradebot.live/upgrade.")
+    print()
+
+
 def main():
     print()
     print("=" * 60)
@@ -96,7 +183,18 @@ def main():
     print(f"Project root: {project_root}")
     print()
 
-    # --- Step 1: API gateway ---
+    # --- Step 0: Tier selection ---
+    print("--- Step 0: Tier ---")
+    print("Which Spirit tier are you setting up?")
+    print("  1. Free        (£0, local SQLite, framework-only, BYO strategy)")
+    print("  2. Plus / Pro  (gateway-backed, D-Limit + scorer + risk-gate)")
+    print()
+    tier_choice = _prompt("Tier [1/2]", "2")
+    if tier_choice == "1":
+        return _setup_free_tier(project_root, env_path, yaml_path, yaml_dir)
+
+    # --- Step 1: API gateway (Plus / Pro path) ---
+    print()
     print("--- Step 1: API Gateway ---")
     print("Spirit connects to the trading data API. You need an API key.")
     print()

@@ -57,6 +57,14 @@ _STRATEGY_REGISTRY = {
         "module": "spirit.strategies.experimental.rsi_reversion",
         "class": "RsiReversionStrategy",
     },
+    # Bundled Free-tier example. Lives under strategies/examples/ rather
+    # than experimental/ so it ships in the public-mirror allow-list.
+    # Uses only FrameworkDataProvider; safe to run on Free tier.
+    "sma_crossover": {
+        "aliases": {"sma", "sma_cross"},
+        "module": "spirit.strategies.examples.sma_crossover",
+        "class": "SmaCrossoverStrategy",
+    },
 }
 
 # Build reverse lookup: alias → canonical name

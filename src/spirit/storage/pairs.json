@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "description": "Bundled pair registry for Free-tier Spirit (#561). Replaces the gateway /pairs call, since Free does not authenticate against the gateway. The set is intentionally narrow — Kraken majors that have liquid OHLC across 1m/15m/60m intervals at launch. Users can extend at runtime via SPIRIT_PAIRS env override (read by zone_bounce._get_pairs and any other consumer).",
+  "pairs": [
+    {"pair": "XBTUSD", "active": true, "instance": null, "notes": "BTC/USD"},
+    {"pair": "ETHUSD", "active": true, "instance": null, "notes": "ETH/USD"},
+    {"pair": "SOLUSD", "active": true, "instance": null, "notes": "SOL/USD"},
+    {"pair": "ATOMUSD", "active": true, "instance": null, "notes": "ATOM/USD"}
+  ]
+}

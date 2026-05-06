@@ -1541,6 +1541,10 @@ def main():
         if not strategies:
             trading_enabled = False
 
+    # Pre-init so monitor-only path (no strategy loaded) doesn't UnboundLocal
+    # the downstream `requirements is not None` checks (lines 1742, 1897, 1996).
+    requirements = None
+
     if not trading_enabled:
         logger.warning("=" * 60)
         logger.warning("  NO TRADING ALGORITHM LOADED")
