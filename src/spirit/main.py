@@ -1770,7 +1770,21 @@ def main():
     readiness_gate = None
     freshness_cache = None
 
-    if args.data_source != 'replay':
+    # Tier gate — Free tier never talks to the gateway, so the
+    # WsEventBus connect-loop is just noise (and points at the
+    # internal-only IP). Skip the entire bus block on Free.
+    _tier = (
+        get_config('SPIRIT_TIER', '') or os.environ.get('SPIRIT_TIER', '')
+    ).strip().lower()
+    _free_tier = _tier == 'free'
+
+    if _free_tier:
+        logger.info(
+            "[PIPELINE] SPIRIT_TIER=free — event bus skipped "
+            "(Free runs without the gateway)"
+        )
+
+    if args.data_source != 'replay' and not _free_tier:
         bus_mode = (
             os.environ.get('PIPELINE_EVENT_BUS')
             or get_config('PIPELINE_EVENT_BUS', 'ws')
