@@ -2014,21 +2014,44 @@ def main():
     warmup_candles = requirements.warmup_candles if requirements is not None else 720
     target = max(warmup_candles, int(args.buffer_size))
 
+    # Build the full set of intervals to warm up — primary + monitoring (#572).
+    # Strategies that declare monitoring_intervals (e.g. 1m for ATR stops)
+    # need their SpiritContext.ohlc_df pre-seeded; otherwise feature
+    # engineering silently no-ops with [CONTEXT] Not enough rows for FE
+    # for ~50 minutes after restart. Strategies without monitoring
+    # intervals are unaffected — the loop runs exactly once.
+    if requirements is not None:
+        warmup_intervals = sorted(set(
+            [interval] + list(requirements.monitoring_intervals)
+        ))
+    else:
+        warmup_intervals = [interval]
+
     if multi_pair:
-        # Multi-pair warmup: wait for all pairs on primary interval
+        # Multi-pair warmup: wait for all pairs on each interval, then load.
         if args.data_source == 'kraken':
-            logger.info(f"Waiting for all pairs to warm up ({target} candles on {interval}m)...")
-            data_source.wait_for_all(interval, min_size=target - 1, timeout=300)
-            for pair in pairs:
-                window_df = data_source.get_window(pair, interval, target)
-                context_manager.get(pair).warmup(window_df.records, interval=interval)
-                logger.info(f"  [{pair}] warmup complete ({len(window_df.records)} candles)")
+            for itvl in warmup_intervals:
+                logger.info(
+                    f"Waiting for all pairs to warm up ({target} candles on {itvl}m)..."
+                )
+                data_source.wait_for_all(itvl, min_size=target - 1, timeout=300)
+                for pair in pairs:
+                    window_df = data_source.get_window(pair, itvl, target)
+                    context_manager.get(pair).warmup(window_df.records, interval=itvl)
+                    logger.info(
+                        f"  [{pair}] warmup complete ({len(window_df.records)} "
+                        f"candles, interval={itvl}m)"
+                    )
         else:
             # CSV multi-pair
-            for pair in pairs:
-                window_df = data_source.get_window(pair, interval, target)
-                context_manager.get(pair).warmup(window_df.records, interval=interval)
-                logger.info(f"  [{pair}] warmup complete ({len(window_df.records)} candles)")
+            for itvl in warmup_intervals:
+                for pair in pairs:
+                    window_df = data_source.get_window(pair, itvl, target)
+                    context_manager.get(pair).warmup(window_df.records, interval=itvl)
+                    logger.info(
+                        f"  [{pair}] warmup complete ({len(window_df.records)} "
+                        f"candles, interval={itvl}m)"
+                    )
     else:
         # Single-pair warmup (preserved from before)
         pair = pairs[0]
