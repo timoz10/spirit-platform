@@ -233,11 +233,21 @@ Different paid tiers see different endpoints. The full matrix is in [`PERMISSION
 
 | Tier | What you can pull |
 |------|-------------------|
-| `free` | OHLC, pair registry, your own state. Local SQLite for trades. |
+| `free` | OHLC (direct from exchange), pair registry, your own state. Local SQLite for trades. |
 | `subscription` | Adds D-Limit indicators (60m + 15m), zones, zone touches, bounce events, bounce physics, cloud-side trade storage. |
 | `pro` | Subscription + scorer outputs, full orderbook history, wall lifecycles, write access. |
 
 If you call an endpoint your tier doesn't unlock, you get a `403`. Plan your data needs around your tier.
+
+### Free-tier specifics
+
+On Free, `get_data_provider()` returns a `CompositeDataProvider` that splits the work:
+
+- **Reads** (`get_ohlc`, `get_pairs`) come from an `ExchangeBackedDataProvider` that wraps your configured `ExchangeProvider` (Kraken at v2.3.0). No gateway calls, no API key. Bulk historical backfills are limited to ~720 candles per request — enough for live evaluation, not for deep backtesting.
+- **Writes** (`put_state`, `write_performance`, `write_heartbeat`) go to a local SQLite file at `~/.spirit/<instance>/spirit.db` (override with `SPIRIT_SQLITE_PATH`).
+- **IP methods** (`get_zones`, `get_dlimit`, `get_*_calibration`, …) raise `NotImplementedError` with an upgrade message. There is no silent fallback — if your strategy calls an IP method on Free it will crash, by design.
+
+A working starting point is `src/spirit/strategies/examples/sma_crossover.py` — paper-mode-by-default, ~120 lines, uses only `FrameworkDataProvider`. Copy it, adapt it, and drop your version in `~/.spirit/strategies/` (see §6).
 
 ### Reading from event payloads (no fetch race)
 

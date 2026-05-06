@@ -463,16 +463,33 @@ _provider: DataProvider | None = None
 
 
 def get_data_provider() -> DataProvider:
-    """Return the singleton DataProvider instance (api-mode only).
+    """Return the singleton DataProvider instance.
 
-    Spirit is api-driven; all data access goes through the gateway.
+    Routing is driven by `SPIRIT_TIER`:
+      - `free`              → CompositeDataProvider over an
+                              ExchangeBackedDataProvider (Kraken public REST
+                              today) + a SqliteDataProvider keyed under
+                              `~/.spirit/<instance>/spirit.db`. No API key
+                              required, no gateway calls.
+      - `subscription`/`pro`/unset → ApiDataProvider against the gateway,
+                                     same path as before.
     """
     global _provider
     if _provider is not None:
         return _provider
 
-    from spirit.utils.api_data_provider import ApiDataProvider
     from spirit.utils.config_loader import get_config
+
+    tier = (get_config("SPIRIT_TIER", "") or "").strip().lower()
+    if not tier:
+        import os
+        tier = os.environ.get("SPIRIT_TIER", "").strip().lower()
+
+    if tier == "free":
+        _provider = _build_free_tier_provider()
+        return _provider
+
+    from spirit.utils.api_data_provider import ApiDataProvider
 
     base_url = get_config("SPIRIT_API_URL", "http://10.0.0.4:8000/v1")
     api_key = get_config("SPIRIT_API_KEY", "")
@@ -482,7 +499,8 @@ def get_data_provider() -> DataProvider:
     if not api_key:
         raise RuntimeError(
             "SPIRIT_API_KEY must be set (env var or spirit.yaml). "
-            "Run `python3 -m spirit.setup` to configure."
+            "Run `python3 -m spirit.setup` to configure, or set "
+            "SPIRIT_TIER=free to run the local Free-tier stack."
         )
     _provider = ApiDataProvider(base_url=base_url, api_key=api_key)
     logger.info(f"DataProvider: api → {base_url}")
@@ -504,3 +522,53 @@ def reset_data_provider() -> None:
     """Reset the singleton (for testing only)."""
     global _provider
     _provider = None
+
+
+def _build_free_tier_provider():
+    """Construct a CompositeDataProvider for the Free tier.
+
+    Wired separately so testers can patch the exchange/sqlite delegates
+    without re-implementing the env-var resolution. Resolution order:
+
+      SPIRIT_INSTANCE          → instance name (default: 'local')
+      SPIRIT_SQLITE_PATH       → explicit DB path override
+                                 (default: ~/.spirit/<instance>/spirit.db)
+      SPIRIT_FREE_EXCHANGE     → exchange name override
+                                 (default: 'kraken' — the only one shipped)
+    """
+    import os
+    from pathlib import Path
+
+    from spirit.utils.composite_data_provider import CompositeDataProvider
+    from spirit.utils.exchange_backed_data_provider import (
+        ExchangeBackedDataProvider,
+    )
+    from spirit.utils.sqlite_data_provider import SqliteDataProvider
+
+    instance = os.environ.get("SPIRIT_INSTANCE", "local").strip() or "local"
+    sqlite_path = os.environ.get("SPIRIT_SQLITE_PATH", "").strip()
+    if not sqlite_path:
+        sqlite_path = str(
+            Path("~/.spirit").expanduser() / instance / "spirit.db"
+        )
+
+    exchange_name = os.environ.get(
+        "SPIRIT_FREE_EXCHANGE", "kraken",
+    ).strip().lower() or "kraken"
+    if exchange_name == "kraken":
+        from spirit.exchange.kraken import KrakenExchangeProvider
+        exchange = KrakenExchangeProvider()
+    else:
+        raise RuntimeError(
+            f"SPIRIT_FREE_EXCHANGE={exchange_name!r} is not bundled with "
+            "v2.3.0. Only 'kraken' ships at launch; add a plugin under "
+            "src/spirit/exchange/ and re-route here."
+        )
+
+    reads = ExchangeBackedDataProvider(exchange)
+    writes = SqliteDataProvider(sqlite_path)
+    logger.info(
+        f"DataProvider: free → exchange={exchange.name} "
+        f"sqlite={sqlite_path} instance={instance}"
+    )
+    return CompositeDataProvider(reads=reads, writes=writes)
