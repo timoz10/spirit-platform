@@ -1,574 +1,101 @@
 # Changelog
 
-All notable changes to the kraken-bot project will be documented in this file.
+All notable changes to Spirit are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+> **Versioning policy.** See `docs/features/spirit/SPIRIT_V2_ARCHITECTURE.md` § "Versioning Process" for what triggers a MAJOR / MINOR / PATCH bump.
+>
+> **Release process.** See `docs/RELEASE_PUBLISHING_RUNBOOK.md`.
+>
+> **Pre-platform history.** Anything before v2.2.0 (ML experiments, infra
+> migrations, July-August 2025 bug fixes, etc.) lives in
+> `docs/archive/CHANGELOG_PRE_PUBLIC.md`. Kept for grep-ability; not
+> distributed to the public mirror.
+
+---
 
 ## [Unreleased]
 
+The first public release candidate. Adds the Free tier (`pip install spirit-trading`, no API key required, runs against your own Kraken keys), a customer-facing uninstall + health CLI, and a stack of launch-UX polish from a full Proxmox dry-run.
+
 ### Added
-- **D-Limit introduction blog post** (2026-02-20): Comprehensive overview of D-Limit technical indicator
-  - docs/blog_posts/D-Limit_first_Post - Original draft (25 lines)
-  - docs/blog_posts/D-Limit_first_Post_EDITED.md - Enhanced version (164 lines)
-  - Full pipeline documentation covering all 10 modules
-  - Module map with development status
-  - Unidirectional data flow architecture explained
-  - Status: Draft ready for Ghost CMS publication
-- **PostgreSQL replay data source** (2026-02-20): Batch backfill infrastructure for D-Limit
-  - src/spirit/utils/replay_data_source.py - PG-based replay data source
-  - scripts/dlimit_15m_backfill_all.sh - 15m interval batch backfill script
-  - Purpose: Historical D-Limit indicator backfilling from PostgreSQL OHLC data
-- **Daily close-up documentation** (2025-12-12): End of day summary for infrastructure and security work
-  - docs/daily/2025-12-12.md (daily log with detailed activity summary)
-  - docs/daily/2025-12-12-RECAP.md (comprehensive recap of infrastructure cleanup)
-  - docs/branches.md updated (Last Activity: 2025-12-12 for feature/d-limit)
-  - docs/context.md updated (Infrastructure simplification and security hardening section)
+
+- **Free-tier framework** with pluggable `DataProvider` routing — Free uses local SQLite + your own Kraken keys; Plus continues with the API gateway. New modules: `SqliteDataProvider`, `ExchangeBackedDataProvider`, `CompositeDataProvider`, `pair_registry` static fallback. Setup wizard prompts for tier on first run. Bundled `sma_crossover` reference strategy registered as a built-in. (#561 / #564)
+- **Setup wizard polish** — questionary-based arrow-key UI, optional TradeBOT API key entry on Free, sensible value-defaults, normalised custom strategy name. (#569)
+- **`spirit-uninstall` wizard** — clean removal of an install: stops systemd unit (or SIGTERMs a bare `python -m spirit.main` process), removes the install tree, optionally purges local data and the spirit system user. Honest about scope — API key revocation stays the user's responsibility via the portal. (#591, #593, #595, #600)
+- **`spirit-health` CLI** — one-screen liveness summary reading the local SQLite (process state, last heartbeat + age, version, last trade, total trades). (#592)
+- **Periodic `[SPIRIT] alive` log line** every 30 minutes (configurable via `SPIRIT_ALIVE_LOG_INTERVAL_S`) so quiet strategies don't make a healthy install look hung. Independent of the DB heartbeat. (#592)
+- **Orphan-process guard at startup** — refuses to start if another `spirit.main` is already running, with a `--allow-multi-instance` override for legitimate Pro setups. (#592)
+- **Public-mirror infrastructure** — allow-list, dry-run filter script, procedure doc, LICENSE (Apache-2.0), `README.md.public`, `pyproject.toml.public` with slimmed dependency set (heavy ML/PG/TA deps stripped). The dry-run renames `.public` files at filter time so the public mirror gets a normal-looking tree. (#562)
+- **GitHub Actions workflows** for the Free-tier framework — pytest gate (165 tests, ~10s) + weekly Kraken network smoke. Both run on the existing self-hosted runner. (#564)
+- **Release publishing runbook** at `docs/RELEASE_PUBLISHING_RUNBOOK.md` — versioning, cadence, pre-release gates, tag procedure, public-mirror push, customer comms, hotfix fast-path, rollback procedures, post-release verification. (#587)
 
 ### Changed
-- **Database infrastructure corrected** (2025-12-10): Migrated PostgreSQL from Dev server to DB server
-  - Database relocated: 188.245.98.89 → 188.245.209.204
-  - Database size: 50GB (210,487,769 rows in ohlc table)
-  - Migration duration: 2.5 hours (dump, transfer, restore)
-  - Disk space freed on Dev server: 51GB (from 64GB to 13GB used)
-  - Database now on appropriate server: 16GB RAM vs 8GB RAM
-  - Zero data loss, zero downtime
-  - 24 Python scripts updated with correct database host
-  - utils/db_connection.py and .env.postgres updated
-  - PostgreSQL removed from Dev server
-  - Documentation: DATABASE_MIGRATION_SUCCESS_2025-12-10.md (560 lines)
-  - Documentation: INFRASTRUCTURE_AUDIT_2025-12-10.md (463 lines)
-  - Documentation: CLOUD_MIGRATION_PLAN_2025-12-10.md (987 lines)
-- **Infrastructure simplification** (2025-12-12): Removed 200GB cloud volume
-  - Decision: Keep database on system drive (160GB), remove unused cloud volume
-  - Rationale: 50GB database on 160GB drive (37% used), adequate for 1-2+ years
-  - Cost savings: €5.28/month (€63.36/year)
-  - Result: Simpler infrastructure, no downtime, volume can be added back if needed
-  - Documentation: CLOUD_VOLUME_REMOVAL_2025-12-12.md
 
-### Added
-- **ML validation studies and lessons learned** (2025-12-08): Comprehensive validation confirming ML abandonment decision
-  - TEMPORAL_LEAKAGE_VALIDATION_FINDINGS.md (383 lines) - Temporal leakage hypothesis test (REJECTED)
-  - RANKING_SYSTEM_VALIDATION_REPORT.md (351 lines) - Data quality verification (31,371 trades validated)
-  - FINDING_OPTIMAL_TRAINING_WINDOW.md (454 lines) - Window size optimization methodology
-  - OPTIMAL_WINDOW_RESULTS.md (364 lines) - Window analysis results (all failed, Test F1 < 0.13)
-  - ML_MODEL_TRAINING_LESSONS_LEARNED.md (1,232 lines) - V3 model post-mortem with templates
-  - FINAL_VALIDATION_TEST_PLAN.md (188 lines) - Test design for temporal split validation
-  - scripts/final_validation_temporal_split.py - Temporal leakage test implementation
-  - scripts/validate_ranking_system.py - Database ranking system validation
-  - scripts/find_optimal_training_window.py - Window size optimization testing
-  - Key findings: Insufficient data primary problem (81 trades too few), temporal leakage not the issue, window size irrelevant, features inadequate
-  - Strategic confirmation: ML abandonment justified with quantitative evidence from 3 independent validation studies
-
-- **Blog editing infrastructure** (2025-12-08): AI-powered workflow for Ghost blog quality control
-  - BLOG_EDITING_GUIDE.md (369 lines) - Comprehensive guide for /blog-edit command usage
-  - .claude/commands/blog-edit.md - AI editor slash command implementation
-  - .claude/commands/README.md - Command documentation
-  - Features: Grammar correction, technical accuracy verification, voice consistency, enhancement suggestions
-  - TradeBOT voice documented: Honest, technical, practical, conversational, direct
-  - Blog post iterations: Refined ML failure post with dates, code examples, casual tone
-
-- **Comprehensive ML failure blog post** (2025-11-20): Why_Our_XGBoost_Whipsaw_Model_Failed.md
-  - Path: docs/blog_posts/Why_Our_XGBoost_Whipsaw_Model_Failed.md
-  - Length: 492 lines (~5,000 words)
-  - Purpose: Document complete ML whipsaw guard journey from success to failure
-  - Covers: 4 model versions, 3 validation periods, 9 weeks walk-forward analysis
-  - Key finding: 92% performance drop from training (F1: 0.97) to testing (F1: 0.07)
-  - Lessons learned: 10 actionable insights for ML practitioners
-  - Strategic outcome: ML whipsaw guard abandoned, pivot to trailing stops (30x better)
-
-### Added
-- **Trade quality analysis framework** (2025-11-15): Comprehensive system for analyzing MACD cross performance
-  - scripts/trade_quality_analysis.py - Detects crosses, simulates trades, classifies quality
-  - scripts/filter_effectiveness_on_quality.py - Tests filter configurations on trade populations
-  - scripts/create_q1_2025_data.py - Extracts Q1 2025 validation dataset from cloud PostgreSQL
-  - Trade classification: Good (>0%), Neutral (0 to -1%), Bad (<-1%)
-  - Metrics: P&L, MFE, MAE, capture rate, exit efficiency
-- **Q1 2025 validation dataset** (2025-11-15): test_data/xbtusd_60m_q1_2025.csv
-  - Period: 2025-01-01 to 2025-03-31
-  - Timeframe: 60-minute bars
-  - Total bars: 2,184
-  - File size: 183KB
-  - Source: Cloud PostgreSQL (188.245.98.89)
-- **Comprehensive analysis reports** (2025-11-15): 6 reports documenting filter failures
-  - Q1_2025_TRADE_QUALITY_REPORT.md (11KB) - Main findings
-  - STRATEGY_ITERATION_REPORT_2025-11-15.md - Iteration analysis
-  - ML_THRESHOLD_SWEEP_REPORT_2025-11-15.md - ML threshold results
-  - ML_GUARD_VALIDATION_RESULTS_2025-11-15.md - Validation results
-  - FINAL_STRATEGY_SUMMARY_2025-11-15.md - Strategy summary
-  - ML_VS_BASELINE_PERFORMANCE_REPORT_2025-11-15.md - Performance comparison
-- **Analysis output datasets** (2025-11-15):
-  - outputs/trade_quality_analysis_detailed.csv (21KB) - All 81 Q1 2025 trades analyzed
-  - outputs/filter_effectiveness_detailed.csv (12KB) - Filter performance data
-
-### Added
-- **ML whipsaw guard integration** (2025-11-14): Production XGBoost guard operational in Spirit bot
-  - Fixed prediction API: Changed from predict_proba to DMatrix + predict (native XGBoost)
-  - Feature extraction: All 9 features working (close, SMA200, ATR, MACD, signal, histogram, RSI, ADX, volume)
-  - Guard performance: 11 high-risk trades blocked at threshold 0.7 with 100% precision
-  - Strategy integration: ML strategy selectable via SPIRIT_STRATEGY environment variable
-  - Aliases: macd_cross_ml, macd_ml, ml
-- **Test dataset** (2025-11-14): xbtusd_15m_4weeks.csv with 2,689 bars for validation
-- **Database migration** (2025-11-14): SQLite to PostgreSQL sync (550K rows, zero errors)
-  - Gap filled: 2025-08-26 to 2025-11-14 (80 days of current data)
-  - Total PostgreSQL rows: 210.5M (database current through Nov 14, 2025)
-- **Comprehensive ML documentation** (2025-11-14): 2,543 lines across 4 guides
-  - WHIPSAW_MODEL_TRAINING_METHODOLOGY.md (714 lines) - Training process
-  - SPIRIT_ML_INTEGRATION_GUIDE.md (842 lines) - Integration guide
-  - ML_STRATEGY_USAGE.md (215 lines) - Usage instructions
-  - TECHNICAL_DEBT.md (169 lines) - Technical debt tracking
-  - BLOG_WORKSTREAM_TRACKER.md (704 lines) - Blog site milestones
-- **Blog site workstream** (2025-11-14): Theme and color palette configured
-  - Platform: Ghost CMS
-  - Status: Planning phase (defining site deliverables)
-  - Purpose: Parallel income stream alongside trading bot
-- **Cloud infrastructure** (2025-11-13): Migrated to Hetzner Cloud
-  - Bot server: CPX42 (8 vCPU, 16GB RAM, 160GB NVMe) at 188.245.209.204
-  - PostgreSQL server: CX22 (2 vCPU, 8GB RAM, 80GB NVMe) at 188.245.98.89
-  - Location: Nuremberg, Germany
-  - Total cost: €28.70/month (~£25/month)
-- **Database migration** (2025-11-13): 64GB PostgreSQL database migrated to cloud
-  - Compression: 64GB → 5.0GB (92% reduction using pg_dump --compress=9)
-  - Transfer: 3.5 minutes (23 MB/s)
-  - Restore: ~3 hours (194M rows, 57 indexes, parallel workers)
-  - Status: 85% complete (data loaded, indexes building)
-- **Infrastructure expansion** (2025-11-11): Dell-6330 laptop added to Proxmox cluster
-  - Purpose: Temporary VM host to resolve Bot machine OOM issues
-  - Specs: 8GB RAM, 256GB SSD
-  - Will host VMs 101, 102, 103 (freeing ~8GB RAM on PVE host)
-  - Enables Bot machine RAM reallocation (9.7GB → 16-18GB target)
-- **NEW Q1-trained XGBoost model** (2025-11-10) with 3.5x better precision than old model
-  - Model path: models/whipsaw_xgb_q1_2025/whipsaw_model_q1.json
-  - Training: 128 samples from Q1 2025 (80/20 split)
-  - Performance: 50% precision on Q1 test, 14.3% on Q2 validation
-  - Blocks only 8% of trades vs old model's 56%
-- Ground truth verification system for Q1/Q2 2025 (160 and 173 MACD crosses)
-- Comprehensive model validation documentation (3 files, 21 KB):
-  - MODEL_VALIDATION_FINDINGS_2025-11-10.md - Old model analysis (4-6% precision)
-  - Q1_2025_MODEL_RETRAINING_2025-11-10.md - Complete retraining documentation
-  - FINAL_MODEL_COMPARISON_2025-11-10.md - Head-to-head comparison showing 3.5x improvement
-- Training scripts: train_q1_2025_from_ground_truth.py, validate_new_model_q2.py
-- Verification script: verify_whipsaw_detection.py (generates ground truth CSVs)
-- Q1 2025 validation script (test_q1_2025_validation.py, 535 lines) - untested due to infrastructure failure
-- Q2 2025 walk-forward validation script (test_q2_2025_validation_optimized.py, 536 lines)
-- Q2 2025 validation results (52 trades, CSV format)
-- Comprehensive analysis documents (4 files, 73 KB total):
-  - Position sizing analysis comparing 9 strategies
-  - Profit factor improvement analysis (37.3% winner reversal finding)
-  - Trailing stop results and configuration
-  - Spirit architecture review
-- Analysis scripts for threshold testing, profit factor improvements, position sizing
-- Project backlog with 18 prioritized tasks
-- Tomorrow's priorities planning document
-- XGBoost whipsaw detection model (v3) with 11-year training dataset (2013-2025)
-- ML experiment tracking framework with branch-based versioning
-- Training pipeline (train_whipsaw_xgboost.py) with performance tracking
-- Validation pipeline (validate_whipsaw_model.py) with backtest comparison
-- ML experiment documentation (README, v1/v2/v3 version docs, template)
-- Pre-entry feature engineering (histogram_strength, macd_divergence, price_vs_sma200)
-- PostgreSQL whipsaw schema with 4 tables for MACD cross analysis
-- Data pipeline for MACD cross detection, trade simulation, and ranking
-- Technical indicator computation scripts with 31 indicators
-- PostgreSQL database infrastructure (12 tables, 57 indexes, 3 schemas)
-- CSV import pipeline for 21GB Kraken historical OHLC data
-- Database utilities (backup, restore, monitoring, connection pooling)
-- Migration framework with rollback support
-- Monitoring daemon for import process
-- Comprehensive security and credentials documentation
-
-### Changed
-- **Strategy direction** (2025-11-15): Fundamental shift from threshold-based to adaptive filtering
-  - REJECTED "winning" filter config (SMA200 + ADX>20 + RSI<70)
-  - Root cause: Blocks 88% of good trades (3/17 captured) with NEGATIVE avg P&L (-0.24%)
-  - ADX-only filter superior: 88.2% capture rate (15/17) with positive avg P&L (+0.16%)
-  - Paper trading deployment PAUSED pending filter redesign
-  - New direction: Probabilistic/fuzzy logic + regime-adaptive filtering
-- **Exit strategy priority** (2025-11-15): Exit improvement now higher priority than entry filtering
-  - Analysis revealed 110.97% profit left on table (captures only 6.9% of potential)
-  - Average potential: 7.86% per good trade
-  - Average captured: 0.54% per good trade
-  - Trailing stops moved to P0 priority
-- **ML prediction API** (2025-11-14): Switched to native XGBoost DMatrix approach
-  - Old: predict_proba() on scikit-learn wrapper (FAILED)
-  - New: DMatrix + predict() on native Booster (SUCCESS)
-  - Benefit: More reliable, better performance, avoids joblib issues
-- **Feature extraction robustness** (2025-11-14): Added column name fallback logic
-  - Checks both 'macd_hist' (Spirit) and 'macd_histogram' (training data)
-  - Enhanced missing value detection with named tracking
-  - Debug logging added for troubleshooting (10+ statements)
-- **Branch status** (2025-11-14): feature/whipsaw-ml-v2 merged to develop
-  - Merge commit: f90bd23
-  - Status: ML strategy now in integration branch
-  - Next: Paper trading validation
-- **Infrastructure architecture** (2025-11-13): Hybrid cloud/local deployment
-  - Bot compute workloads: Cloud (Hetzner CPX42, 16GB RAM)
-  - PostgreSQL database: Cloud (Hetzner CX22, 8GB RAM)
-  - Local Proxmox: 6 VMs operational (NodeRed, MQTT, InfluxDB, HomeAssistant, SQL01 backup)
-  - Eliminated cluster complexity (single-node Proxmox, no Dell-6330)
-  - Removed SharedPool NFS loopback mount (problematic design)
-- **ML model status (2025-11-10):** NEW Q1-trained model ready for deployment
-  - Old model: 4.1% precision, blocks 56% trades (UNACCEPTABLE)
-  - New model: 14.3% precision, blocks 8% trades (READY FOR PAPER TRADING)
-  - Improvement: 3.5x better precision, 7x fewer trades blocked
-  - Next steps: Q2 P&L analysis, go/no-go decision for paper trading
-- ML model v3 status: Superseded by Q1-trained model (old model had 11-year dataset but poor generalization)
-- Production deployment: Unblocked - new model shows acceptable performance
-- ML model feature set: removed lookahead bias features (MAE, MFE, bars_held) in v2
-- ML model dataset: expanded from 3.5k to 28k trades (8.9x increase) in v3
-- Feature importance shifted from ATR (v2, 56%) to SMA200 (v3, 27.8%) across market cycles
-- Model selectivity: v3 allows 26.4% of trades vs v2's 15.5% (more balanced)
+- **API keys no longer carry a tier prefix.** New keys are `sk_<token>` only; tier lives on the `api_keys.role` column. Existing keys with the old prefix continue to work — auth hashes the full string and looks up by hash. No DB migration required. Fixes the "user upgrades Free → Plus but key still says `sk_free_…`" UX problem. (#570 / #589)
+- **`__version__` and `pyproject.toml` aligned with the public release tag.** Internal counter scheme (was bumping toward 2.11.0) replaced with the tag scheme (2.2.1) from this release onward. CI gate (#568) keeps the two strings in lock-step. (#588)
+- **`spirit-uninstall` defaults to Free-tier-friendly mode** — reads the local SQLite directly to detect open positions instead of initialising the runtime DataProvider (which on Free tier dragged in the Kraken adapter just to read one row). Plus fall through to the DataProvider as before. (#600)
+- **Shutdown log line** no longer says "Final state saved to PG for all pairs" (misleading on Free tier, which uses SQLite). Now: `Final state saved for all pairs (instance=<name>)`. (#594)
+- **`KrakenOHLCBuffer` log lines** carry the pair + interval prefix instead of repeating identically across all 14 buffers (`[KrakenOHLCBuffer][XBTUSD/60m] Background updater stopped.`). (#594)
+- **Internal IP defaults removed.** `data_provider.py` and `preflight.py` defaulted `SPIRIT_API_URL` to `http://10.0.0.4:8000/v1` (an internal private-net IP). Defaults are now `https://api.tradebot.live/v1` — the public URL. Internal callers that still need the private endpoint set `SPIRIT_API_URL` explicitly. (#562)
 
 ### Fixed
-- **XGBoost prediction API error** (2025-11-14): ML guard integration failing
-  - Root cause: Using predict_proba() on native Booster instead of DMatrix + predict()
-  - Solution: Rewrote prediction logic to use XGBoost DMatrix API
-  - Impact: ML guard now operational with 11 blocks at 0.7 threshold
-- **Feature extraction bugs** (2025-11-14): Two bugs fixed in feature engineering
-  - Bug 1: Column name mismatch (macd_hist vs macd_histogram)
-  - Bug 2: Silent failures on missing values (no error reporting)
-  - Solution: Added fallback logic and enhanced missing value tracking
-  - Impact: All 9 features extracting correctly with comprehensive logging
-- **RESOLVED (2025-11-13):** Bot machine OOM crisis after 3-day blockage
-  - Solution: Migrated to Hetzner CPX42 with 16GB RAM (65% increase)
-  - ML validation work now unblocked
-  - Cloud provides stable, scalable resources vs local RAM constraints
-- **RESOLVED (2025-11-13):** Proxmox cluster quorum issues
-  - Removed Dell-6330 node from cluster
-  - Single-node Proxmox cluster stable
-- **RESOLVED (2025-11-13):** SharedPool NFS loopback mount issues
-  - Disabled problematic NFS mount (PVE → PVE)
-  - All VMs migrated to local-lvm direct storage
-- **RESOLVED (2025-11-13):** VM 101 (NodeRed) boot failure
-  - Restored from backup (2025-11-10)
-  - All 6 local VMs now operational
-- Lookahead bias in v1 ML model (v2 uses only pre-entry features)
-- NumPy type conversion bug in technical indicators computation (psycopg2 compatibility)
-- SQL01 VM stability after RAM overcommitment incident
 
-### Issues Discovered
-- **CRITICAL (2025-11-15):** SMA200 filter blocking good trades in trending markets
-  - "Winning" config captures only 3/17 good trades (17.6%) with -0.24% avg P&L
-  - SMA200 blocks 47% of good trades (8 out of 17)
-  - Strategy over-optimized for choppy markets (Aug-Nov 2024), fails in trending markets (Q1 2025)
-  - Threshold-based logic (ADX>20, RSI<70, price>SMA200) too rigid for market spectrum
-  - Impact: Cannot deploy to paper trading with current filter configuration
-  - Resolution: Shift to probabilistic/adaptive filtering approach
-- **CRITICAL (2025-11-15):** Exit strategy leaving 110.97% profit on table
-  - Good trades average +7.86% potential but only +0.54% captured (6.9% efficiency)
-  - Exit inefficiency larger issue than entry filtering
-  - Impact: Even perfect entry filter cannot overcome poor exits
-  - Resolution: Implement trailing stops (P0 priority)
-- **RESOLVED (2025-11-13):** Bot machine OOM events blocking ML validation work
-  - Resolution: Cloud migration to Hetzner CPX42 (16GB RAM)
-  - Status: Unblocked after 3-day blockage (2025-11-10, 11, 12)
-- **CRITICAL (2025-11-11):** Bot machine OOM events blocking ML validation work (HISTORICAL)
-  - 4 OOM killer events (Python scripts consuming 9.6GB on 9.7GB system)
-  - Root cause: ML validation scripts loading large OHLC datasets with technical indicators
-  - Scripts affected: test_q1_2025_validation.py, test_q2_2025_validation.py
-  - Impact: All ML script execution blocked, Q2 baseline validation incomplete
-  - Resolution: Infrastructure expansion (Dell-6330) to free RAM for Bot machine
-  - Target: 16-18GB RAM allocation (sufficient for ML workloads)
-- **CRITICAL (2025-11-07):** SQL01 VM data disk hardware failure (2TB USB SSD)
-  - PostgreSQL I/O errors block all database access
-  - VM 107 cannot boot after disk migration (fstab configuration mismatch)
-  - USB storage reliability issues (multiple drives disconnected simultaneously)
-  - No backup strategy for 21GB database (8,656 CSV files, 176M+ rows at risk)
-  - 4TB drive (SSD2_4T) physically disconnected
-- ML model v3 does not generalize to Q2 2025 data (distribution shift)
-- Model too conservative: blocks 91.8% of Q2 2025 trades vs 73.6% on training data
-- Insufficient trade volume: 52 trades in 3 months vs expected ~200+ trades
-- Winner reversal problem: 37.3% of profitable trades reverse into losses (£33k opportunity cost)
+- **`SpiritContext` warmup primes every declared interval**, not just the primary. Pre-fix, monitoring intervals (e.g. 1m for ATR stops on `zone_bounce` / `macd_cross`) silently started cold for ~50 minutes after every restart, with feature engineering no-op'ing on incoming candles. Affected any strategy with `monitoring_intervals` declared; `sma_crossover` (no monitoring intervals) was unaffected. (#572 / #575)
+- **`spirit-uninstall --dry-run` now shows what a live run would do.** Detection of bare `spirit.main` processes was short-circuited in dry-run, giving a false impression that nothing would happen — even though a real run absolutely would SIGTERM the process. Detection is read-only (`pgrep`) and now runs in dry-run too; `stop_bare_processes` has its own dry-run path that prints `[DRY-RUN] Would SIGTERM PID X`. (#595)
+- **`spirit-health` column-name drift.** Two SQL queries used PG-flavoured column names that don't match the canonical SQLite schema in `src/spirit/storage/sqlite_schema.sql`: `updated_at` (should be `last_heartbeat`) and `pnl_realized` (should be `pnl_pct`). Errors were swallowed silently, so every health run reported "(none)" for the heartbeat AND the last trade even when real rows existed. Plus a regression gate that builds the test DB from the canonical schema file so future drift fails CI. (#595)
+- **`spirit-uninstall` no longer prints "✓ Stopped + disabled spirit.service" on a no-systemd box.** Misleading wording when the systemd unit was never installed; now prints `- no systemd unit named spirit.service (skipping)` and skips the no-op `systemctl stop`/`disable` calls. (#600)
+- **`spirit-uninstall` correctly detects bare `python -m spirit.main` processes** that were started outside systemd. Pre-fix, the wizard would happily `rm -rf` the install tree out from under a live process. Now it SIGTERMs detected bare processes, waits up to 30s, and refuses (exit 3) to remove the install tree if any are still running unless `--force` is set. (#593)
+- **Internal-username sanitisation.** Three docstring examples in framework files surviving the public mirror filter referenced `'davy'` (an internal developer name). Replaced with the generic `'alice'`. (#562)
 
-### Performance
-- ML training time: 1.44s for 28k samples (excellent scalability)
-- ML inference time: <1ms per prediction
-- Model profit factor: 1.17 (v3 filtered) vs 0.96 (baseline)
-- Model win rate: 38.3% (v3 filtered) vs 32.4% (baseline)
-- Total P&L improvement: +218.8% (+645% filtered vs -543% baseline on 28k trades)
-- CSV import rate: 30,357 rows/second with bulk inserts
+### Internal
 
-## [0.1.0] - 2025-10-31
+- **Calibrators stop spamming ERROR on tier-gated 403s.** Bridge mitigation until `/v1/me` capability advertisement (#597 / #598) lands. Each of the 6 capability-gated calibrators (`cooldown`, `risk_gate`, `entry_quality`, `composite_threshold`, `thesis_writer`, `bounce_signature`) now detects 403, logs INFO once with an upgrade hint, and skips subsequent retries for the lifetime of the process. Pro/admin keys unaffected. (#599)
+- **CX22 canary API key bumped subscription → pro** (migration 035) so the canary exercises the full Pro stack including the calibration endpoints gated on `read:scorer`. (#596)
+- **`runtime_lock.py` orphan-process detection** module — used by both startup (refuses to launch with another Spirit running) and uninstall (SIGTERMs bare processes before removing files). (#592 / #593)
+- **`capability_check.py` helper** — `is_403_forbidden`, `is_capability_denied`, `mark_capability_denied`. Process-lifetime de-dup so the same caller doesn't log the same tier-gap twice. (#599)
+- **Substantial test coverage added** — 44 SqliteDataProvider tests (Rule 11 type round-trip, schema migration, crash recovery, heartbeat, performance, DST regression), 29 uninstall tests, 19 health tests (incl. schema-drift gates that build the test DB from the canonical schema file), 12 runtime-lock tests, 15 capability-check tests, plus 6 multi-interval warmup tests for #572.
+
+### Tracked follow-ups (filed but not in this release)
+
+| # | Topic |
+|---|---|
+| #565 | Add v2.2.1 framework files to PUBLIC_MIRROR_ALLOWLIST (closed by #562) |
+| #570 | Drop tier prefix from new API keys (closed by #589) |
+| #572 | SpiritContext warmup primes the primary interval only (closed by #575) |
+| #577 | Portal: paid tiers not visible at signup; rename Subscriber → Plus |
+| #579 | Portal: welcome email + key-issuance flow on tier upgrade |
+| #580 | Platform: terms of service + privacy policy for paid tiers |
+| #582 | Platform: public status / uptime page |
+| #583 | Platform: monitoring + alerting stack for solo-on-call posture |
+| #584 | Platform: CX33 gateway patching + zero-downtime deploy runbook |
+| #585 | Platform: CX22 in-flight update procedure |
+| #586 | Platform: end-to-end paid-tier signup smoke test |
+| #587 | Platform: release publishing process (this runbook in progress) |
+| #597 | Gateway: `GET /v1/me` endpoint — expose role + capabilities |
+| #598 | Spirit: read `/v1/me` capabilities at startup, skip endpoints the tier doesn't allow |
+| #417 (scope #2) | Customer-facing self-revoke API endpoint (scope #1 closed by #591/#593) |
+
+---
+
+## [2.2.0] — 2026-05-05
+
+First "stable platform" tag. Phase A capability-based tier enforcement on data routes + Phase B per-key daily quotas + Hetzner egress accounting + Kraken data licence request committed. Internal tag — public release was originally targeted here but slipped to 2.2.1 to incorporate the Free tier.
 
 ### Added
-- Initial PostgreSQL database deployment
-- MACD cross strategy implementation
-- Basic backtesting framework
-- Environment-based strategy selection
+
+- **Phase A — capability-based tier enforcement** on all data routes. 19 capabilities, 32 role-capability mappings stored in `public.role_capabilities`. Migration 033. (#549 / #556)
+- **Phase B — per-key daily quotas + Hetzner egress accounting**. New table `api_key_quota_daily` (per-key, per-day rollup). Quota lookup is a single PK hit; daily rollover is implicit. Migration 034. (#549 / #559 / #560)
+- **Kraken data licence request** committed at `docs/Kraken-data-licence-request-2026-05-05.md`. Sent 2026-05-05.
+
+### Fixed
+
+- Replaced oversized `limit=` sentinels in `_trajectory_recover_if_needed` and `_expectation_recover_if_needed` with tight, documented caps (60,000 — ~42 days of 1m candles). Pre-fix, calls passed `limit=500_000` against a gateway capped at `le=200_000` → silent 422, swallowed by outer `try/except Exception`, recovery never fired on api-mode. (#425 / #548)
+
+For pre-2.2.0 changes (versions 2.0 through 2.10.x — internal counter scheme, ML experiments, infra migrations), see `docs/features/spirit/SPIRIT_V2_ARCHITECTURE.md` § "Version History" and `docs/archive/CHANGELOG_PRE_PUBLIC.md`.
 
 ---
 
-## Version History
-
-### Whipsaw ML Model Versions
-
-| Version | Date | Branch | Status | Key Changes |
-|---------|------|--------|--------|-------------|
-| v1 | 2025-11-05 | feature/whipsaw-ml-v1 | Archived | Baseline with lookahead bias (reference only) |
-| v2 | 2025-11-05 | feature/whipsaw-ml-v2 | Active | Fixed lookahead bias, 3.5k trades, ATR #1 feature |
-| v3 | 2025-11-05 | feature/whipsaw-ml-v2 | Production | 28k trades (2013-2025), SMA200 #1 feature, +218.8% P&L |
-
-### Database Schema Versions
-
-| Version | Date | Description |
-|---------|------|-------------|
-| 001 | 2025-10-31 | Initial schema: public, dev, admin schemas with 12 tables |
-| 002 | 2025-11-04 | Added whipsaw schema with 4 tables for ML analysis |
-
----
-
-## Notes
-
-- **Branch Strategy:** Feature branches merge to develop, then develop merges to main
-- **ML Models:** Tracked via branch-based versioning (feature/whipsaw-ml-v{N})
-- **Database Migrations:** Located in migrations/ with rollback scripts
-- **Documentation:** Daily logs in docs/daily/, architectural context in docs/context.md
-
----
-
-## Infrastructure Incidents
-
-### 2025-11-13 - Cloud Migration Success (OOM Resolution)
-**Severity:** High (resolved critical 3-day blockage)
-**Status:** RESOLVED
-
-**Timeline:**
-- 06:00 - Morning planning, cloud migration decision approved
-- 08:00 - Hetzner account created, Bot server (CPX42) provisioned
-- 10:00 - PostgreSQL server (CX22) provisioned, PostgreSQL 16 installed
-- 12:00 - Database dump started on local SQL01 (64GB → 5.0GB compressed)
-- 13:30 - Database transfer to cloud (3.5 minutes, 23 MB/s)
-- 14:00 - Database restore started (pg_restore --jobs=4)
-- 15:00 - Bot code deployed to cloud server
-- 16:00 - Proxmox repairs: removed Dell-6330, disabled SharedPool NFS
-- 17:00 - VM 101 restored from backup
-- 18:00 - Database restore 85% complete (data loaded, indexes building overnight)
-
-**Actions:**
-- Migrated Bot server to Hetzner Cloud CPX42 (16GB RAM, 8 vCPU, 188.245.209.204)
-- Created dedicated PostgreSQL server on Hetzner CX22 (8GB RAM, 2 vCPU, 188.245.98.89)
-- Migrated 64GB trading_bot database (92% compression, parallel restore)
-- Fixed Proxmox cluster (removed Dell-6330 node, single-node cluster stable)
-- Removed SharedPool NFS loopback mount (problematic design)
-- Restored VM 101 (NodeRed) from backup after migration failure
-
-**Impact:**
-- OOM crisis RESOLVED after 3-day blockage
-- ML validation work UNBLOCKED (can resume Q2 baseline validation tomorrow)
-- Infrastructure complexity REDUCED (6 VMs local, no cluster, no NFS)
-- Professional hosting ENABLED (99.9% uptime, backup solutions, monitoring)
-
-**Cost Analysis:**
-- Cloud: €28.70/month (~£25/month)
-- Opportunity cost saved: £180-240 (3 days troubleshooting)
-- Break-even: Already exceeded 18-24 months of cloud costs
-
-**Lessons Learned:**
-- Cloud economics compelling when troubleshooting exceeds 2 hours
-- Database compression critical: 92% reduction enabled fast migration
-- Separation of concerns: Dedicated database server better than colocated
-- Parallel restore matters: 4 workers cut restore time in half
-- Keep rollback options: Local SQL01 running during migration provides safety net
-- Infrastructure complexity has hidden costs: Simple local setup more reliable
-
-**Reference:** docs/daily/2025-11-13.md
-
----
-
-### 2025-11-10 to 2025-11-12 - Bot Machine OOM Crisis (3 Days)
-**Severity:** Critical (blocked all ML work)
-**Status:** RESOLVED (2025-11-13 via cloud migration)
-
-**Timeline:**
-- 2025-11-10: OOM discovered during Q2 validation (Day 1)
-- 2025-11-11: Dell-6330 provisioned as cluster host (Day 2)
-- 2025-11-12: VM migration failed, cloud research (Day 3)
-- 2025-11-13: Cloud migration executed, OOM resolved
-
-**Root Cause:**
-- Bot machine (192.168.1.30) with 9.7GB RAM insufficient for ML workloads
-- ML validation scripts loading large OHLC datasets (9.6GB peak memory)
-- 4 OOM killer events blocked all ML script execution
-
-**Impact:**
-- 3 days of zero ML progress (2025-11-10, 11, 12)
-- Q2 2025 baseline validation incomplete
-- ML priorities from 2025-11-10 blocked
-- 9-12 hours consumed in local infrastructure troubleshooting
-
-**Resolution:**
-- Cloud migration to Hetzner CPX42 (16GB RAM, 65% increase)
-- Professional hosting eliminates local hardware constraints
-- Scalable resources for future ML workloads
-
-**Reference:** docs/daily/2025-11-10.md, 2025-11-11.md, 2025-11-12.md, 2025-11-13.md
-
----
-
-### 2025-11-07 - SQL01 Storage Failure
-**Severity:** Critical
-**Status:** Partially Resolved (VM offline, requires fstab repair)
-
-**Timeline:**
-- 09:00 - Attempted Q1 2025 validation, PostgreSQL I/O errors discovered
-- 10:00 - Root cause identified: 2TB USB SSD (SSD01_2T) hardware failure
-- 11:00 - Emergency data migration from 2TB to 500GB backup drive
-- 13:00 - USB power cycle restored 2TB drive (health uncertain)
-- 14:00 - VM 107 boot failure discovered (fstab mismatch with new disk)
-- 17:00 - Day ended with VM offline, Monday recovery planned
-
-**Impact:**
-- All ML validation work blocked (no database access)
-- Zero code progress on 2025-11-07
-- Q1 2025 validation script created but untested
-- Distribution shift investigation blocked
-
-**Resolution Plan (Monday 2025-11-10):**
-1. Boot VM 107 in rescue mode
-2. Update fstab with new disk UUIDs
-3. Verify database integrity (176M+ rows)
-4. Reconnect 4TB drive (SSD2_4T)
-5. Implement emergency backup strategy
-6. Assess 2TB drive health (SMART diagnostics)
-
-**Lessons Learned:**
-- USB storage unreliable for production databases
-- No backup strategy = unacceptable risk
-- Need hardware health monitoring (SMART, I/O errors)
-- Document disaster recovery procedures
-
-### 2025-11-03 - SQL01 VM Crash
-**Severity:** High
-**Status:** Resolved
-
-**Cause:** Proxmox RAM overcommitment during CSV import
-**Resolution:** Within 1 hour, zero data loss
-**Reference:** docs/SQL01_INCIDENT_RESOLUTION.md
-
----
-
-## Historical Bug Fixes (July-August 2025)
-
-These issues were resolved during the initial Spirit bot development phase.
-
-### 2025-07-15
-
-**Issue 1: Duplicate Trades in Rolling Window**
-- Bug: Multiple trades logged for same entry time due to processing entire temp table on each rolling window step
-- Fix: Only the latest row is now processed for trade signals
-
-**Issue 2: Data Fetch Delay**
-- Bug: Data not being fetched from data source, causing tables to be dropped
-- Fix: Added buffer wait logic to ensure data is fully loaded before processing
-
-**Issue 3: Datetime Format Consistency**
-- Bug: Inconsistent datetime formats between API and CSV data
-- Fix: Added ISO8601 date format normalization to `data_source.py`
-
-### 2025-07-16
-
-**Issue 4: SMA200 Calculation Failure**
-- Bug: SMA200 calculation failing due to incorrect handling of rolling window - only single rows passed
-- Fix: Fixed CSV import to ensure 720 rows imported at once into buffer
-
-### 2025-07-17
-
-**Issue 5: Time/Date Handling for API Calls**
-- Bug: Polling handled by spirit_main with no consistent time tracking
-- Fix: Moved API polling logic to `data_source.py` with consistent time tracking
-
-**Issue 6: Temp Table Management**
-- Bug: Temp table dropped and recreated on each new candle, causing issues with large indicators
-- Fix: Implemented efficient strategy that retains historical data, only updates new candle
-
-**Issue 7: Temp Table New Row Missing Engineering**
-- Bug: Feature engineering not applied correctly when new row added to temp table
-- Fix: Added mini engineering step after inserting new rows
-
-**Issue 8: Missing buffer.stop() Call**
-- Bug: Time sync process continued running after main program exit
-- Fix: Added `buffer.stop()` call in shutdown sequence
-
-### 2025-07-18
-
-**Issue 9-10: No Trades Logged**
-- Bug: spirit_main not processing trades correctly
-- Fix: Centralized trade logic to strategy module with TradeStateManager
-
-**Issue 11-12: Missing Trade Prices**
-- Bug: Strategy not returning entry/exit prices in trade details
-- Fix: In test mode, set prices from current row's close field if not present
-
-### 2025-07-21
-
-**Issue 13-14: TradeRecord Dataclass Migration**
-- Bug: Strategy using dict instead of TradeRecord dataclass
-- Fix: Updated strategy to use TradeRecord dataclass for all trade-related data
-
-### 2025-07-22
-
-**Issue 15: Trades Not in SQLite Temp Table**
-- Bug: Mismatch in request type data (macd_cross_event vs macd_cross)
-- Fix: Corrected to use macd_cross in both places
-
-**Issue 16: No Variable for Candle Time Frame**
-- Bug: API call hardcoded for 15min candle time frame
-- Fix: Added variable in spirit_main.py to pass time frame value
-
-### 2025-07-23
-
-**Issue 17: system_config.py & Logger Update**
-- Bug: Difficult to increase logging levels for debugging
-- Fix: Added system-wide variables file to manage configuration options
-
-**Issue 18: No Exit Trades Logged**
-- Bug: Exit trades not being logged
-- Fix: Corrected strategy logic - changed from macd_cross_event==-1 to macd_cross==-1.0
-
-**Issue 19: Missing Entry Index Numbers**
-- Resolution: Not a bug - entry_index not recorded when MACD is at 0
-
-### 2025-07-24
-
-**Issue 20: Missing Exit Data in CSV**
-- Bug: Incorrect/missing fields in TradeRecords dataclass
-- Fix: Exit trade data now recorded correctly in CSV output
-
-**Issue 21: spirit_main Loop with API**
-- Bug: API only sending 10 rows to buffer, preventing SMA200 calculation
-- Fix: Removed hardcoded API call, replaced with system variables for pair and request size
-
-### 2025-07-25
-
-**Issue 22: Candle Data Mismatch (API vs CSV)**
-- Bug: API data format doesn't match CSV test data format
-- Fix: Added `data_types.py` dataclass for standardized OHLC data format
-
-**Issue 23: spirit_main Looping on Startup**
-- Bug: No delay or wait for new candle data causing loop
-- Fix: Corrected get_window logic in LiveDataSource
-
-**Issue 24: spirit_temp_data Dropping Rows**
-- Bug: 199 rows removed on each loop but only 1 added
-- Fix: Only update features for new row, never replace or truncate table unless in full mode
-
-### 2025-08-01
-
-**Issue 25: macd_cross Calculation Timing**
-- Bug: macd_cross picks up event on next candle (15 min delay)
-- Fix: Corrected calculation logic to immediately reflect new regime on crossover row
-
-### 2025-08-02
-
-**Issue 26: macd_cross Serialization**
-- Bug: macd_cross being treated as numpy.int64, serialized to bytes object
-- Fix: Feature engineering logic updated to ensure macd_cross stored as integer
-
-### 2025-08-03
-
-**Issue 27: spirit_temp_table Primary Key Reuse**
-- Bug: ID reuse after row deletion due to `df.to_sql(..., if_exists="replace")`
-- Fix: Drop and recreate table with AUTOINCREMENT schema, use `if_exists="append"`
-
----
-
-**Last Updated:** 2026-01-19
+[Unreleased]: https://github.com/timoz10/spirit-platform/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/timoz10/spirit-platform/releases/tag/v2.2.0
