@@ -72,13 +72,84 @@ def _service_is_active(unit: str = "spirit.service") -> bool:
         return False
 
 
+def _systemd_unit_known(unit: str = "spirit.service") -> bool:
+    """Return True iff systemd has a unit file registered for `unit`.
+
+    `systemctl cat` exits 0 if the unit is known anywhere systemd looks
+    (`/etc/systemd/system/`, `/lib/systemd/system/`, drop-in dirs, etc.),
+    nonzero if it's never been installed. Distinguishes "unit doesn't
+    exist" (skip silently) from "unit exists but is stopped" (still
+    deserves a stop+disable for cleanliness).
+    """
+    if not _systemctl_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["systemctl", "cat", unit],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def _detect_open_positions(install_tree: Path) -> list[str]:
     """Best-effort: return list of pairs with open positions.
 
-    Reads spirit_state via the runtime DataProvider if importable from
-    the install tree. Returns an empty list on any failure (a missing
-    or partially-uninstalled tree, an import error, no DB access, etc.)
-    so we never block uninstall on a stale state file.
+    Two-tier approach so we don't drag in the entire Spirit runtime
+    just to read one row:
+
+    1. **Free tier** — local SQLite at `~/.spirit/<instance>/spirit.db`.
+       Direct sqlite3.connect read of `spirit_state.open_positions`.
+       No Kraken adapter, no DataProvider factory, no extra log spam.
+
+    2. **Plus / Pro fallback** — if no local SQLite is present (cloud-
+       backed install) or `SPIRIT_INSTANCE` is unset, fall through to
+       the runtime DataProvider. Heavier (initialises Kraken + WS) but
+       tier-correct for cloud-backed positions.
+
+    Returns [] on any failure so we never block uninstall on a stale
+    or unreadable state file.
+    """
+    instance = os.environ.get("SPIRIT_INSTANCE", "").strip()
+    if instance:
+        sqlite_path = Path.home() / ".spirit" / instance / "spirit.db"
+        if sqlite_path.exists():
+            return _detect_open_positions_sqlite(sqlite_path)
+    return _detect_open_positions_via_provider(install_tree)
+
+
+def _detect_open_positions_sqlite(db_path: Path) -> list[str]:
+    """Read open_positions directly from the Free-tier SQLite.
+
+    Cheap path: opens the DB file, reads one row, closes. No Spirit
+    runtime imports, no Kraken adapter init.
+    """
+    import json
+    import sqlite3
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            cur = conn.execute(
+                "SELECT value FROM spirit_state WHERE key = ?",
+                ("open_positions",),
+            )
+            row = cur.fetchone()
+        if not row or not row[0]:
+            return []
+        data = json.loads(row[0])
+        if isinstance(data, dict):
+            return [pair for pair, pos in data.items() if pos]
+        return []
+    except (sqlite3.Error, json.JSONDecodeError, OSError):
+        return []
+
+
+def _detect_open_positions_via_provider(install_tree: Path) -> list[str]:
+    """Plus / Pro fallback: query through the runtime DataProvider.
+
+    Kept for installs without a local SQLite (cloud-backed state).
+    Heavier than the SQLite path because it spins up the Kraken
+    adapter as a side effect, but tier-correct.
     """
     src = install_tree / "src"
     if not src.exists():
@@ -233,6 +304,11 @@ def stop_systemd_unit(unit: str = "spirit.service", dry_run: bool = False) -> No
     """Stop + disable the systemd unit. Tolerates not-present."""
     if not _systemctl_available():
         print("  - systemctl not available (skipping)")
+        return
+    if not _systemd_unit_known(unit):
+        # No unit registered with systemd — print a clean no-op line
+        # instead of misleading "✓ Stopped + disabled spirit.service".
+        print(f"  - no systemd unit named {unit} (skipping)")
         return
     if dry_run:
         print(f"  [DRY-RUN] Would: systemctl stop {unit} && systemctl disable {unit}")
