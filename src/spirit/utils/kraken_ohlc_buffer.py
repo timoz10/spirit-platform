@@ -14,7 +14,7 @@ class KrakenOHLCBuffer:
         """
         if hasattr(self, '_stop_event'):
             self._stop_event.set()
-            logger.info("[KrakenOHLCBuffer] Background updater stopped.")
+            logger.info(f"[KrakenOHLCBuffer][{self.pair}/{self.interval}m] Background updater stopped.")
     def _get_interval_seconds(self):
         """Return interval in seconds (self.interval is normalized to int minutes)."""
         return int(self.interval) * 60
@@ -198,7 +198,7 @@ class KrakenOHLCBuffer:
             # After buffer is warmed, only then trigger callback for newest candle
             if not self._is_warm and len(self.buffer) >= 200:
                 self._is_warm = True
-                logger.info(f"[KrakenOHLCBuffer] Warmup complete. Buffer size: {len(self.buffer)}")
+                logger.info(f"[KrakenOHLCBuffer][{self.pair}/{self.interval}m] Warmup complete. Buffer size: {len(self.buffer)}")
 
             # If warm, then trigger only for the last candle
             if self._is_warm and new_candles:
