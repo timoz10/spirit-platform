@@ -117,6 +117,16 @@ class SpiritOrchestrator:
         # for hours. See issue #409.
         self._last_heartbeat_ts: float = 0.0
         self._heartbeat_min_interval_s: float = 60.0
+        # Periodic visible-log "alive" tick — separate cadence from the DB
+        # heartbeat. The DB heartbeat is for monitoring (60s); this is for
+        # users staring at the log file. Default 30 min so the log isn't
+        # full of liveness chatter, configurable via env for test runs.
+        self._last_alive_log_ts: float = 0.0
+        try:
+            self._alive_log_min_interval_s: float = float(
+                get_config('SPIRIT_ALIVE_LOG_INTERVAL_S', '1800'))
+        except (TypeError, ValueError):
+            self._alive_log_min_interval_s = 1800.0
         self.data_source = None  # set after data source creation
         self.csv_thread = None
         self._instance = get_config('SPIRIT_INSTANCE', 'prod')
@@ -198,6 +208,34 @@ class SpiritOrchestrator:
         except Exception:
             pass
 
+    def _alive_log_tick(self, pair, ctx):
+        """Periodic INFO-level liveness log for users staring at the log file.
+
+        Strategy-agnostic — fires regardless of whether the strategy
+        emitted a signal. Solves the silent-log UX gap for Free-tier
+        users running quiet strategies (e.g. SMA crossover with no
+        crosses on a sideways day).
+
+        Cadence: gated on wall-clock seconds via
+        ``_alive_log_min_interval_s`` (default 1800s / 30 min, tunable
+        via ``SPIRIT_ALIVE_LOG_INTERVAL_S``). Independent of the DB
+        heartbeat cadence.
+        """
+        now = time.monotonic()
+        if now - self._last_alive_log_ts < self._alive_log_min_interval_s:
+            return
+        self._last_alive_log_ts = now
+
+        candles = ctx.health.get('candles_processed', 0) if hasattr(ctx, 'health') else 0
+        last_candle = ctx.health.get('last_candle_dt') if hasattr(ctx, 'health') else None
+        last_candle_str = str(last_candle) if last_candle else 'unknown'
+
+        self.logger.info(
+            f"[SPIRIT] alive: instance={self._instance} pair={pair} "
+            f"pairs_active={len(self.pairs)} candles={candles} "
+            f"last_candle={last_candle_str}"
+        )
+
     def on_pair_candle(self, pair, interval_val, window_df, is_csv=False):
         """Multi-pair callback: routes (pair, interval, window) to the right context."""
         try:
@@ -214,6 +252,7 @@ class SpiritOrchestrator:
             # Heartbeat on signal-interval candles only (avoid 1m spam)
             if iv == int(self.interval):
                 self._heartbeat_tick(pair, ctx)
+                self._alive_log_tick(pair, ctx)
 
             # Registry-based routing (Spine multi-strategy)
             if self.registry is not None:
@@ -1343,6 +1382,35 @@ def main():
     logger = get_logger("spirit_main")
     logger.info("---------- SPIRIT starting ----------")
 
+    # Detect orphan / leftover Spirit processes before we do any work.
+    # A previous instance that crashed or was force-killed without a clean
+    # shutdown can leave a process running that shares the same API key,
+    # writes to the same spirit_state, and double-emits paper trades.
+    # See feedback / issue: orphan-process detection added 2026-05-07.
+    try:
+        from spirit.runtime_lock import (
+            detect_other_spirit_processes,
+            format_conflict_lines,
+            is_multi_instance_allowed,
+        )
+        if not is_multi_instance_allowed():
+            others = detect_other_spirit_processes()
+            if others:
+                logger.error("Refusing to start: another Spirit process is already running.")
+                for line in format_conflict_lines(others):
+                    logger.error(line)
+                logger.error("Stop the existing instance first:")
+                logger.error(f"  kill {others[0]}                # graceful SIGTERM")
+                logger.error("  systemctl stop spirit             # if systemd-managed")
+                logger.error("Or, if you genuinely need multiple instances on this box:")
+                logger.error("  set SPIRIT_ALLOW_MULTI_INSTANCE=1, or pass --allow-multi-instance")
+                raise SystemExit(2)
+    except SystemExit:
+        raise
+    except Exception as e:
+        # Detection failure should never block startup. Log and proceed.
+        logger.warning(f"[runtime-lock] orphan-process check failed (non-fatal): {e}")
+
     # Pre-flight validation
     # Kraken exchange keys are only needed in live mode.
     # Detect mode from CLI (--mode live) or config (SPIRIT_MODE=live).
@@ -1438,6 +1506,9 @@ def main():
     parser.add_argument('--buffer-size', type=int, default=KRAKEN_OHLC_COUNT)
     parser.add_argument('--mode', type=str, choices=['test', 'paper', 'live'], default='test')
     parser.add_argument('--multi-interval', action='store_true')
+    parser.add_argument('--allow-multi-instance', action='store_true',
+                        help="Skip the 'another Spirit running?' guard at startup. "
+                             "Use only for genuine multi-instance setups (Pro tier).")
     parser.add_argument('--duration', type=int, default=None)
     parser.add_argument('--no-pause', action='store_true')
     parser.add_argument('--exit-after-warmup', action='store_true')
