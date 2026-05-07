@@ -103,6 +103,88 @@ def _detect_open_positions(install_tree: Path) -> list[str]:
         sys.path[:] = saved_path
 
 
+def _detect_bare_spirit_processes() -> list[int]:
+    """Return PIDs of spirit.main processes started outside systemd.
+
+    Reuses ``runtime_lock.detect_other_spirit_processes`` so the wizard
+    sees the same processes the startup guard sees. Returns [] on any
+    import / detection failure so a partially-broken install doesn't
+    block the uninstall.
+
+    The systemd-active check (`_service_is_active`) ONLY catches
+    processes managed by `spirit.service`. A user who started Spirit
+    via `python3 -m spirit.main` directly (manual debug, no unit
+    installed) won't show up there — without this check, the wizard
+    would happily rm-rf the install tree out from under a live
+    process.
+    """
+    try:
+        from spirit.runtime_lock import detect_other_spirit_processes
+    except Exception:
+        return []
+    try:
+        return detect_other_spirit_processes()
+    except Exception:
+        return []
+
+
+def _pid_alive(pid: int) -> bool:
+    """True iff the process is still alive. Uses os.kill(pid, 0)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we can't signal it — still "alive" for our
+        # purposes (we'll fail loudly rather than silently rm).
+        return True
+
+
+def stop_bare_processes(pids: list[int], dry_run: bool = False,
+                        timeout_s: int = 30) -> bool:
+    """SIGTERM each PID and wait up to ``timeout_s`` for graceful exit.
+
+    Returns True iff all processes have exited by the deadline. False
+    if any are still running (caller should refuse to remove the
+    install tree in that case).
+    """
+    import signal
+    import time
+
+    if not pids:
+        return True
+    if dry_run:
+        for pid in pids:
+            print(f"  [DRY-RUN] Would SIGTERM PID {pid}")
+        return True
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"  ✓ Sent SIGTERM to PID {pid}")
+        except ProcessLookupError:
+            print(f"  - PID {pid} already gone")
+        except PermissionError:
+            print(f"  ✗ Cannot signal PID {pid} (run as the owning user or root)")
+            return False
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        still = [p for p in pids if _pid_alive(p)]
+        if not still:
+            print(f"  ✓ All bare Spirit processes exited cleanly")
+            return True
+        time.sleep(1)
+
+    still = [p for p in pids if _pid_alive(p)]
+    if still:
+        print(f"  ✗ {len(still)} process(es) still running after {timeout_s}s: {still}")
+        print(f"     Send SIGKILL manually if needed: kill -9 {' '.join(str(p) for p in still)}")
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Interactive helpers
 # ---------------------------------------------------------------------------
@@ -289,14 +371,28 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"   Close them first, or pass --force to override.")
             return 2
 
-    # 1b. Pre-flight: running service
+    # 1b. Pre-flight: running systemd service
     if _service_is_active():
         print()
-        print("⚠  spirit.service is currently active.")
+        print("⚠  spirit.service is currently active (will be stopped).")
         if not args.yes and not args.dry_run:
             if not _confirm("Stop it now and continue?", default=True):
                 print("Aborted.")
                 return 1
+
+    # 1c. Pre-flight: bare Spirit processes (manual `python3 -m spirit.main`,
+    #     not under systemd). The systemd check above misses these — without
+    #     this guard the wizard would rm-rf the install tree while a live
+    #     process is still loading config/yaml from it.
+    bare_pids = _detect_bare_spirit_processes() if not args.dry_run else []
+    if bare_pids:
+        print()
+        print(f"⚠  Bare Spirit process(es) running outside systemd: PID {bare_pids}")
+        print("   These won't be stopped by `systemctl stop spirit`.")
+        print("   The wizard will SIGTERM them directly before removing files.")
+        if not args.yes and not _confirm("Stop them now and continue?", default=True):
+            print("Aborted.")
+            return 1
 
     # 2. Global confirmation
     if not args.yes and not args.dry_run:
@@ -314,6 +410,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 4. Stop systemd unit
     _print_step("stop spirit.service")
     stop_systemd_unit(dry_run=args.dry_run)
+
+    # 4b. SIGTERM any bare processes detected at pre-flight. We do this
+    #     *between* the systemd stop and the rm so that everything that
+    #     could be running has a chance to exit cleanly.
+    if bare_pids:
+        _print_step(f"SIGTERM bare Spirit processes ({len(bare_pids)})")
+        ok = stop_bare_processes(bare_pids, dry_run=args.dry_run)
+        if not ok and not args.force:
+            print()
+            print("✗ Some Spirit processes are still running. Refusing to remove the")
+            print("  install tree while a live process holds modules in memory.")
+            print("  SIGKILL them manually or pass --force, then re-run.")
+            return 3
 
     # 5. Remove systemd + logrotate files
     _print_step("remove systemd + logrotate files")
