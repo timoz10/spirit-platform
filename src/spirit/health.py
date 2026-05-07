@@ -110,15 +110,19 @@ def _print_summary(instance: str, db_path: Path, now: datetime) -> None:
 
     print(f"  Local DB:       {db_path}")
 
-    # 3. Heartbeat
+    # 3. Heartbeat — column is `last_heartbeat` per sqlite_schema.sql
+    #    (NOT `updated_at`, which was the original wrong guess + caused
+    #    every health run to silently report "(none)" even when a real
+    #    heartbeat row existed). See test_health_schema_columns_match
+    #    for the regression gate.
     hb = _query_one(
         db_path,
-        "SELECT updated_at, status FROM daemon_heartbeats "
-        "WHERE daemon_id = ? ORDER BY updated_at DESC LIMIT 1",
+        "SELECT last_heartbeat, status FROM daemon_heartbeats "
+        "WHERE daemon_id = ? ORDER BY last_heartbeat DESC LIMIT 1",
         (f"spirit:{instance}",),
     )
     if hb:
-        last_hb = _parse_dt(hb.get("updated_at"))
+        last_hb = _parse_dt(hb.get("last_heartbeat"))
         age_str = _format_age(last_hb, now)
         status = hb.get("status", "unknown")
         print(f"  Last heartbeat: {last_hb} ({age_str})")
@@ -135,10 +139,14 @@ def _print_summary(instance: str, db_path: Path, now: datetime) -> None:
             label = key.split(":")[-1].replace("_", " ").title()
             print(f"  {label}:{' ' * (16 - len(label) - 1)}{row['value']}")
 
-    # 5. Performance
+    # 5. Performance — column names match sqlite_schema.sql
+    #    (`pnl_pct`, NOT `pnl_realized` — same column-drift class as the
+    #    `last_heartbeat` fix above. The print below currently shows just
+    #    pair / strategy / age, but selecting pnl_pct keeps it available
+    #    for the next iteration without another schema-drift round.)
     last_trade = _query_one(
         db_path,
-        "SELECT entry_timestamp, pair, strategy_name, pnl_realized "
+        "SELECT entry_timestamp, pair, strategy_name, pnl_pct "
         "FROM strategy_performance ORDER BY entry_timestamp DESC LIMIT 1",
     )
     count_row = _query_one(db_path, "SELECT COUNT(*) AS n FROM strategy_performance")

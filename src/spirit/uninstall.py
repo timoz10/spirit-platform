@@ -384,13 +384,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     #     not under systemd). The systemd check above misses these — without
     #     this guard the wizard would rm-rf the install tree while a live
     #     process is still loading config/yaml from it.
-    bare_pids = _detect_bare_spirit_processes() if not args.dry_run else []
+    #
+    # Run detection in --dry-run too, so the user sees what a live run
+    # would do. `stop_bare_processes` has its own dry-run path that
+    # prints "Would SIGTERM PID X" without sending the signal.
+    bare_pids = _detect_bare_spirit_processes()
     if bare_pids:
         print()
         print(f"⚠  Bare Spirit process(es) running outside systemd: PID {bare_pids}")
         print("   These won't be stopped by `systemctl stop spirit`.")
-        print("   The wizard will SIGTERM them directly before removing files.")
-        if not args.yes and not _confirm("Stop them now and continue?", default=True):
+        if args.dry_run:
+            print("   The wizard would SIGTERM them before removing files (dry-run).")
+        else:
+            print("   The wizard will SIGTERM them directly before removing files.")
+        if not args.yes and not args.dry_run and \
+           not _confirm("Stop them now and continue?", default=True):
             print("Aborted.")
             return 1
 
