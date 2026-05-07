@@ -926,7 +926,7 @@ class SpiritOrchestrator:
                 pass
 
         self.context_manager.save_all()
-        self.logger.info("Final state saved to PG for all pairs")
+        self.logger.info(f"Final state saved for all pairs (instance={self._instance})")
 
         try:
             if not no_pause and not is_csv and sys.stdin.isatty():
