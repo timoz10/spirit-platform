@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -19,6 +20,56 @@ from urllib3.util.retry import Retry
 from spirit.logger import get_logger
 
 logger = get_logger("api_data_provider")
+
+
+# Capability-denial 403 looks like:
+#   {"detail": "Capability 'read:ohlc' required"}
+# emitted by spirit.api.auth.require_capability. We parse the capability name
+# out so callers can branch on which capability is missing without string
+# matching on the message.
+_CAP_DENIED_PATTERN = re.compile(r"Capability '([^']+)' required")
+
+
+class CapabilityDeniedError(requests.HTTPError):
+    """The gateway rejected the request because the API key lacks a capability.
+
+    Distinguishes "policy-denied at the auth layer" from generic 4xx errors.
+    Carries `.capability` so callers can decide whether to fall back to a
+    different data path (e.g. local OHLC when `read:ohlc` is denied) rather
+    than treating every 403 as a hard failure.
+
+    Subclasses `requests.HTTPError`, so existing broad `except HTTPError`
+    handlers continue to work — callers opt in to the new behaviour by
+    catching `CapabilityDeniedError` specifically.
+    """
+
+    def __init__(self, capability: str, response: requests.Response):
+        self.capability = capability
+        msg = (
+            f"Gateway denied request: capability '{capability}' not granted to this key. "
+            f"Check `/v1/whoami` for the capabilities your tier holds, or upgrade "
+            f"at portal.tradebot.live."
+        )
+        super().__init__(msg, response=response)
+
+
+def _raise_for_capability_denial(resp: requests.Response) -> None:
+    """Convert a capability-denial 403 into a typed CapabilityDeniedError.
+
+    Runs before `raise_for_status()` so the specific exception wins over
+    the generic HTTPError. No-op for any other status or 403 shape.
+    """
+    if resp.status_code != 403:
+        return
+    try:
+        detail = resp.json().get("detail", "")
+    except (ValueError, TypeError):
+        return
+    if not isinstance(detail, str):
+        return
+    match = _CAP_DENIED_PATTERN.search(detail)
+    if match:
+        raise CapabilityDeniedError(match.group(1), resp)
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -118,6 +169,7 @@ class ApiDataProvider:
             params={k: v for k, v in (params or {}).items() if v is not None},
             timeout=self._timeout,
         )
+        _raise_for_capability_denial(resp)
         resp.raise_for_status()
         body = resp.json()
         return [_normalise_row(r) for r in body.get("data", [])]
@@ -135,6 +187,7 @@ class ApiDataProvider:
             headers={"Content-Type": "application/json"},
             timeout=self._timeout,
         )
+        _raise_for_capability_denial(resp)
         resp.raise_for_status()
         return resp.json().get("rows_affected", 0)
 
@@ -146,6 +199,7 @@ class ApiDataProvider:
             headers={"Content-Type": "application/json"},
             timeout=self._timeout,
         )
+        _raise_for_capability_denial(resp)
         resp.raise_for_status()
         return resp.json().get("rows_affected", 0)
 
