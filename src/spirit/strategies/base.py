@@ -132,3 +132,28 @@ class BaseStrategy(ABC):
     def uses_risk_gate(self) -> bool:
         """Whether entries from this strategy route through RiskGate for sizing."""
         return False
+
+    @property
+    def required_capabilities(self) -> frozenset[str]:
+        """Gateway capabilities this strategy needs to function.
+
+        Spirit's preflight checks these against the discovered capability set
+        from `/v1/whoami` at startup. If any are missing, Spirit fails fast
+        with a clear message rather than crashing later on a 403 from a
+        cold call site. Default empty — strategies that need IP (D-Limit,
+        scorer, etc.) should override and list what they need.
+
+        Example:
+            return frozenset({
+                "read:dlimit",
+                "read:zones",
+                "read:bounce_events",
+                "read:consolidation",
+            })
+
+        Note: `read:ohlc` is NOT in the typical required set because OHLC
+        is routed to the local source on Plus/Pro tiers (BYOD, see #666).
+        Only list `read:ohlc` if the strategy genuinely requires the
+        hosted OHLC feed and won't function with a BYOD provider.
+        """
+        return frozenset()
