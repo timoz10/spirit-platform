@@ -38,7 +38,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from spirit.exchange.protocol import ExchangeProvider
 from spirit.logger import get_logger
@@ -100,6 +100,7 @@ class ExchangeBackedDataProvider:
         *,
         pairs: list[dict] | None = None,
         page_sleep_s: float = 1.5,
+        on_fetch_callback: Callable[[str, int, list], None] | None = None,
     ) -> None:
         self._exchange = exchange
         # Lazy-loaded from the bundled JSON; explicit override accepted for
@@ -110,9 +111,17 @@ class ExchangeBackedDataProvider:
         # under Kraken anon-tier's counter recharge (1/sec) without
         # tripping 429s on the OHLC endpoint (2-unit cost). Tests pass 0.
         self._page_sleep_s = page_sleep_s
+        # Opportunistic post-fetch hook (#666 push-on-fetch). Called as
+        # `callback(pair, interval, candles)` with the raw OHLCCandle list
+        # before dict conversion. Wrapped in best-effort try/except —
+        # callback exceptions never propagate into the read path.
+        # Paid-tier factory wires this to push candles to /v1/ohlc/append;
+        # Free tier leaves it None.
+        self._on_fetch_callback = on_fetch_callback
         logger.info(
             f"ExchangeBackedDataProvider initialised "
-            f"(exchange={exchange.name})"
+            f"(exchange={exchange.name}, push_on_fetch="
+            f"{'on' if on_fetch_callback else 'off'})"
         )
 
     # ------------------------------------------------------------------
@@ -154,6 +163,25 @@ class ExchangeBackedDataProvider:
             raw = self._fetch_paged(
                 pair, interval, start_aware, end_aware, limit
             )
+
+        # Push-on-fetch (#666). Best-effort: any failure to reach the
+        # gateway/cloud is logged but never propagates into the read path.
+        # Only the "recent" branch pushes — paged historical fetches can
+        # span tens of thousands of candles, exceed the /append per-call
+        # cap, and should land in cloud via the CSV upload path or via
+        # incremental pushes accumulating over time.
+        if (
+            self._on_fetch_callback is not None
+            and raw
+            and start_aware is None
+        ):
+            try:
+                self._on_fetch_callback(pair, interval, raw)
+            except Exception as e:
+                logger.warning(
+                    f"[EXCHANGE] push-on-fetch failed for "
+                    f"pair={pair} interval={interval}: {e}"
+                )
 
         rows = [_ohlc_candle_to_dict(c, pair, interval) for c in raw]
 
