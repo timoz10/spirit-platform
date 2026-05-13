@@ -596,9 +596,11 @@ def _wrap_paid_tier_byod(gateway):
     """Build a PaidTierComposite for Plus/Pro keys missing read:ohlc (#666).
 
     The OHLC source is an ExchangeBackedDataProvider over the configured
-    exchange (Kraken at v2.2.x). Everything else continues to route to
-    the gateway. Kept in its own helper so the factory branch stays
-    readable and tests can patch it without monkey-patching env vars.
+    exchange (Kraken at v2.2.x), with an opportunistic push-on-fetch hook
+    wired to the gateway's POST /v1/ohlc/append endpoint. Everything else
+    continues to route to the gateway. Kept in its own helper so the
+    factory branch stays readable and tests can patch it without
+    monkey-patching env vars.
     """
     import os
 
@@ -621,5 +623,15 @@ def _wrap_paid_tier_byod(gateway):
             "src/spirit/exchange/ and re-route here."
         )
 
-    ohlc_source = ExchangeBackedDataProvider(exchange)
+    # Push-on-fetch closure: captures the gateway client so every
+    # successful local Kraken fetch lands in the user's scoped cloud
+    # store as a best-effort side effect. The ExchangeBackedDataProvider
+    # catches exceptions raised here, so a gateway outage degrades to
+    # local-only reads with WARN logs instead of failing the trade loop.
+    def _push_to_cloud(pair: str, interval: int, candles: list) -> None:
+        gateway.push_user_ohlc(pair, interval, candles)
+
+    ohlc_source = ExchangeBackedDataProvider(
+        exchange, on_fetch_callback=_push_to_cloud,
+    )
     return PaidTierComposite(ohlc_source=ohlc_source, gateway=gateway)

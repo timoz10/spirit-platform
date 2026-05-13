@@ -130,6 +130,47 @@ def _normalise_row(row: dict) -> dict:
     return {k: _parse_value(v) for k, v in row.items()}
 
 
+def _user_candle_to_wire(candle) -> dict:
+    """Serialise an OHLC candle to the /v1/ohlc/append wire shape.
+
+    Accepts either an OHLCCandle dataclass (from ExchangeProvider) or a
+    framework-shaped dict. The two shapes diverge on the timestamp key
+    name (`timestamp` int-epoch vs `datetime`) — this helper normalises.
+    Numeric coercion is left to pydantic on the gateway side.
+    """
+    # OHLCCandle dataclass: has .timestamp (epoch int)
+    ts = getattr(candle, "timestamp", None)
+    if ts is not None:
+        return {
+            "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            "open": float(candle.open),
+            "high": float(candle.high),
+            "low": float(candle.low),
+            "close": float(candle.close),
+            "volume": float(candle.volume),
+            "vwap": float(candle.vwap) if candle.vwap is not None else None,
+            "count": int(candle.count),
+        }
+    # Framework dict shape: keys datetime, open, high, ... (after _ohlc_candle_to_dict)
+    if isinstance(candle, dict):
+        dt = candle.get("datetime")
+        dt_str = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+        return {
+            "timestamp": dt_str,
+            "open": float(candle["open"]),
+            "high": float(candle["high"]),
+            "low": float(candle["low"]),
+            "close": float(candle["close"]),
+            "volume": float(candle["volume"]),
+            "vwap": float(candle["vwap"]) if candle.get("vwap") is not None else None,
+            "count": int(candle.get("count", 0)),
+        }
+    raise TypeError(
+        f"push_user_ohlc: cannot serialise candle of type {type(candle).__name__}; "
+        "expected OHLCCandle dataclass or framework dict"
+    )
+
+
 class ApiDataProvider:
     """DataProvider backed by HTTP calls to the Spirit API gateway."""
 
@@ -212,6 +253,48 @@ class ApiDataProvider:
             "pair": pair, "interval": interval, "limit": limit, "order": order,
             "start": _iso(start), "end": _iso(end),
         })
+
+    # ------------------------------------------------------------------
+    # BYOD OHLC (#666 — paid-tier scoped storage)
+    # ------------------------------------------------------------------
+
+    def get_user_ohlc(self, pair, interval, *, start=None, end=None,
+                      limit=5000, order="asc"):
+        """Read BYOD scoped OHLC via GET /v1/ohlc/user.
+
+        Same response shape as get_ohlc — drop-in alternate source.
+        Capability required: read:ohlc_user (Plus / Pro / internal_canary).
+        """
+        return self._get("/ohlc/user", {
+            "pair": pair, "interval": interval, "limit": limit, "order": order,
+            "start": _iso(start), "end": _iso(end),
+        })
+
+    def push_user_ohlc(self, pair: str, interval: int, candles) -> dict:
+        """Push BYOD candles via POST /v1/ohlc/append.
+
+        Caller passes either OHLCCandle dataclasses (from the
+        ExchangeProvider boundary) or framework-shaped dicts; this
+        method serialises to the wire shape the gateway expects.
+        Returns the parsed response dict (batch_id, rows_inserted,
+        rows_skipped, min_timestamp, max_timestamp).
+
+        Capability required: write:ohlc_user. Caller wraps in
+        try/except — the gateway's response is opaque to a `_post()`
+        flow, so this method talks directly to the session and surfaces
+        any error to the caller's retry/best-effort policy.
+        """
+        wire_candles = [_user_candle_to_wire(c) for c in candles]
+        body = {"pair": pair, "interval": interval, "candles": wire_candles}
+        resp = self._session.post(
+            f"{self._url}/ohlc/append",
+            data=json.dumps(body, default=_json_default),
+            headers={"Content-Type": "application/json"},
+            timeout=self._timeout,
+        )
+        _raise_for_capability_denial(resp)
+        resp.raise_for_status()
+        return resp.json()
 
     # ==================================================================
     # Zones
