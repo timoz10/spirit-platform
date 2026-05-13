@@ -391,18 +391,21 @@ def _offer_csv_backfill(api_url: str, api_key: str, pairs_csv: str) -> None:
         raw = input("Import a Kraken CSV now? [y/N]: ").strip().lower()
         do_import = raw in ("y", "yes")
     if not do_import:
-        print("  Skipped — you can re-run setup later to import.")
+        print("  Skipped. Re-run later without restarting Spirit:")
+        print("    python3 -m spirit.backfill /path/to/XBTUSDT_60.csv")
         return
 
     csv_path = _ask_text("Path to Kraken CSV (e.g. ~/Downloads/XBTUSD_1.csv)")
     if not csv_path:
         print("  No path given — skipping import.")
+        print("  Run later: python3 -m spirit.backfill /path/to/file.csv")
         return
 
     csv_path = os.path.expanduser(csv_path)
     if not os.path.exists(csv_path):
         print(f"  File not found: {csv_path}")
-        print("  Skipping — re-run setup once the file is in place.")
+        print("  Run later when the file is in place:")
+        print("    python3 -m spirit.backfill /path/to/file.csv")
         return
 
     # Default pair = first one from SPIRIT_PAIRS; user can override.
