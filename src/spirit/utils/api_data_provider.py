@@ -271,7 +271,7 @@ class ApiDataProvider:
         })
 
     def push_user_ohlc(self, pair: str, interval: int, candles) -> dict:
-        """Push BYOD candles via POST /v1/ohlc/append.
+        """Push BYOD candles via POST /v1/ohlc/append (incremental, ≤5k per call).
 
         Caller passes either OHLCCandle dataclasses (from the
         ExchangeProvider boundary) or framework-shaped dicts; this
@@ -284,10 +284,27 @@ class ApiDataProvider:
         flow, so this method talks directly to the session and surfaces
         any error to the caller's retry/best-effort policy.
         """
+        return self._post_candles("/ohlc/append", pair, interval, candles)
+
+    def upload_user_ohlc(self, pair: str, interval: int, candles) -> dict:
+        """Bulk-upload BYOD candles via POST /v1/ohlc/upload (≤50k per call).
+
+        Same wire shape as push_user_ohlc but targets the bulk endpoint
+        used for historical CSV backfill. Batch is tagged source='csv_upload'
+        on the gateway side so we can distinguish historical bulk from
+        live incremental in the audit trail.
+
+        Capability required: write:ohlc_user.
+        """
+        return self._post_candles("/ohlc/upload", pair, interval, candles)
+
+    def _post_candles(self, path: str, pair: str, interval: int,
+                      candles) -> dict:
+        """Shared POST body shaper for /append + /upload."""
         wire_candles = [_user_candle_to_wire(c) for c in candles]
         body = {"pair": pair, "interval": interval, "candles": wire_candles}
         resp = self._session.post(
-            f"{self._url}/ohlc/append",
+            f"{self._url}{path}",
             data=json.dumps(body, default=_json_default),
             headers={"Content-Type": "application/json"},
             timeout=self._timeout,
