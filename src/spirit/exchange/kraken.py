@@ -215,11 +215,17 @@ class KrakenExchangeProvider:
         )
 
     def get_ohlc(
-        self, pair: str, interval: int = 60, count: int = 720
+        self,
+        pair: str,
+        interval: int = 60,
+        count: int = 720,
+        *,
+        since: int | None = None,
     ) -> list[OHLCCandle]:
-        result = self._public_get(
-            "/0/public/OHLC", {"pair": pair, "interval": interval}
-        )
+        params: dict = {"pair": pair, "interval": interval}
+        if since is not None:
+            params["since"] = int(since)
+        result = self._public_get("/0/public/OHLC", params)
         # Dynamic pair key (ignore 'last')
         pair_key = next(k for k in result.keys() if k != "last")
         raw_candles = result[pair_key]
