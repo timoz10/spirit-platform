@@ -350,6 +350,113 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
 
 
 # ---------------------------------------------------------------------------
+# BYOD OHLC backfill helper (#666 sub-task 9b)
+# ---------------------------------------------------------------------------
+
+
+def _offer_csv_backfill(api_url: str, api_key: str, pairs_csv: str) -> None:
+    """Prompt the user for an optional Kraken CSV backfill and run it.
+
+    Pulled out of `_setup_paid_tier` so it can be invoked standalone
+    (e.g. from a `spirit backfill` follow-up subcommand later) and
+    unit-tested without driving the whole wizard.
+
+    Behaviour:
+      - Asks: "Do you have a Kraken historical CSV you'd like to import?"
+      - If yes: prompts for CSV path + pair + interval, then streams the
+        file in 50k-row chunks via ApiDataProvider.upload_user_ohlc.
+        Per-chunk progress is printed.
+      - If the user enters an invalid path or empty input, we print a
+        gentle skip message — never raise.
+    """
+    print()
+    print("--- BYOD OHLC backfill ---")
+    print("Spirit can bulk-import historical OHLC from a Kraken CSV export")
+    print("so trajectory recovery + backtests have data on day one.")
+    print()
+    print("Get a CSV from: https://support.kraken.com/hc/en-us/articles/")
+    print("                  360047124832")
+    print()
+    print("Skip this step if you don't have a CSV yet — Spirit will still")
+    print("run, and your cloud OHLC will accumulate from the live exchange")
+    print("via incremental pushes.")
+    print()
+
+    if _INTERACTIVE:
+        import questionary
+        do_import = questionary.confirm(
+            "Import a Kraken CSV now?", default=False,
+        ).ask()
+    else:
+        raw = input("Import a Kraken CSV now? [y/N]: ").strip().lower()
+        do_import = raw in ("y", "yes")
+    if not do_import:
+        print("  Skipped — you can re-run setup later to import.")
+        return
+
+    csv_path = _ask_text("Path to Kraken CSV (e.g. ~/Downloads/XBTUSD_1.csv)")
+    if not csv_path:
+        print("  No path given — skipping import.")
+        return
+
+    csv_path = os.path.expanduser(csv_path)
+    if not os.path.exists(csv_path):
+        print(f"  File not found: {csv_path}")
+        print("  Skipping — re-run setup once the file is in place.")
+        return
+
+    # Default pair = first one from SPIRIT_PAIRS; user can override.
+    default_pair = (pairs_csv or "XBTUSD").split(",")[0].strip().upper()
+    pair = _ask_text("Pair this CSV covers", default_pair).strip().upper()
+    interval = _ask_select(
+        "Interval (minutes)",
+        choices=[
+            ("1", "1 — minute candles"),
+            ("5", "5 — 5-minute"),
+            ("15", "15 — 15-minute"),
+            ("60", "60 — hourly"),
+        ],
+        default_value="1",
+    )
+
+    # Lazy imports — keep module-load cost flat for users who never run setup.
+    from spirit.utils.api_data_provider import ApiDataProvider
+    from spirit.utils.kraken_csv import iter_kraken_csv_chunks
+
+    provider = ApiDataProvider(base_url=api_url, api_key=api_key)
+    chunks_uploaded = 0
+    total_inserted = 0
+    total_skipped = 0
+    print()
+    print(f"  Streaming {csv_path} as ({pair}, {interval}m) ...")
+    try:
+        for chunk, stats in iter_kraken_csv_chunks(csv_path, chunk_size=50_000):
+            if not chunk:
+                continue
+            resp = provider.upload_user_ohlc(pair, int(interval), chunk)
+            chunks_uploaded += 1
+            total_inserted += resp.get("rows_inserted", 0)
+            total_skipped += resp.get("rows_skipped", 0)
+            print(
+                f"    chunk {chunks_uploaded}: "
+                f"sent={len(chunk)} "
+                f"inserted={resp.get('rows_inserted', 0)} "
+                f"skipped={resp.get('rows_skipped', 0)} "
+                f"(running total: parsed={stats.rows_parsed})"
+            )
+        print()
+        print(f"  Upload complete: {chunks_uploaded} chunks, "
+              f"{total_inserted} new rows, {total_skipped} duplicates.")
+        if stats.rows_skipped:
+            print(f"  ({stats.rows_skipped} malformed rows skipped — "
+                  f"reasons: {dict(stats.skip_reasons)})")
+    except Exception as e:
+        print(f"  Upload failed mid-stream: {e}")
+        print(f"  Partial: {chunks_uploaded} chunks landed before the error.")
+        print("  Re-run setup to retry; already-uploaded candles dedupe.")
+
+
+# ---------------------------------------------------------------------------
 # Plus / Pro path
 # ---------------------------------------------------------------------------
 
@@ -383,6 +490,7 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
 
     # Auto-detect instance name from API key via /whoami
     instance = None
+    capabilities: list[str] = []
     if api_key:
         try:
             import json
@@ -398,6 +506,7 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
                 data = json.loads(resp.read())
                 instance = data.get("instance")
                 key_name = data.get("name", "")
+                capabilities = list(data.get("capabilities", []))
                 print(f"  Authenticated: {key_name} (instance: {instance})")
         except Exception as e:
             print(f"  Could not reach gateway: {e}")
@@ -443,6 +552,21 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
 
     yaml_values["SPIRIT_STRATEGY"] = "zone_bounce"
     yaml_values["SPIRIT_MODE"] = "paper"
+
+    # --- BYOD OHLC backfill (#666 sub-task 9b) ---
+    # Only offer when the key actually has write:ohlc_user. Plus / Pro
+    # post-#665 always do; internal_canary / admin do too. Skipping
+    # cleanly when the cap is absent means a free key that's already
+    # past the tier picker (rare but possible via custom config) doesn't
+    # see a confusing dead-end prompt.
+    if "write:ohlc_user" in capabilities:
+        _offer_csv_backfill(api_url, api_key, pairs_in)
+    else:
+        print()
+        print("--- BYOD OHLC backfill ---")
+        print("  Skipped — your key doesn't carry write:ohlc_user.")
+        print("  (Plus, Pro, and internal_canary keys offer historical")
+        print("   import here; free + admin-only keys don't.)")
 
     # --- Write config ---
     print()
