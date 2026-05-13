@@ -133,9 +133,16 @@ def _normalise_row(row: dict) -> dict:
 def _user_candle_to_wire(candle) -> dict:
     """Serialise an OHLC candle to the /v1/ohlc/append wire shape.
 
-    Accepts either an OHLCCandle dataclass (from ExchangeProvider) or a
-    framework-shaped dict. The two shapes diverge on the timestamp key
-    name (`timestamp` int-epoch vs `datetime`) — this helper normalises.
+    Accepts three shapes (#687):
+      - OHLCCandle dataclass (from ExchangeProvider) — .timestamp is epoch int
+      - Framework dict (from _ohlc_candle_to_dict) — keys: datetime, open, ...
+      - Kraken-CSV dict (from iter_kraken_csv_chunks) — keys: timestamp, open, ...
+        where `timestamp` is already an ISO-format string
+
+    The two dict shapes differ only on the timestamp key name. This helper
+    normalises by reading `datetime` then `timestamp`, defensively raising
+    if neither yields a value (the previous code emitted the literal "None"
+    string in the wire payload and the gateway returned 422 — see #687).
     Numeric coercion is left to pydantic on the gateway side.
     """
     # OHLCCandle dataclass: has .timestamp (epoch int)
@@ -151,10 +158,19 @@ def _user_candle_to_wire(candle) -> dict:
             "vwap": float(candle.vwap) if candle.vwap is not None else None,
             "count": int(candle.count),
         }
-    # Framework dict shape: keys datetime, open, high, ... (after _ohlc_candle_to_dict)
     if isinstance(candle, dict):
-        dt = candle.get("datetime")
-        dt_str = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+        # Framework dicts carry `datetime`; CSV dicts carry `timestamp` (ISO
+        # string). Accept either; reject if neither is usable so callers see
+        # a clear error instead of "None" landing on the wire.
+        raw = candle.get("datetime")
+        if raw is None:
+            raw = candle.get("timestamp")
+        if raw is None:
+            raise ValueError(
+                f"candle missing both 'datetime' and 'timestamp' keys: "
+                f"keys={list(candle)!r}"
+            )
+        dt_str = raw.isoformat() if hasattr(raw, "isoformat") else str(raw)
         return {
             "timestamp": dt_str,
             "open": float(candle["open"]),
@@ -167,7 +183,7 @@ def _user_candle_to_wire(candle) -> dict:
         }
     raise TypeError(
         f"push_user_ohlc: cannot serialise candle of type {type(candle).__name__}; "
-        "expected OHLCCandle dataclass or framework dict"
+        "expected OHLCCandle dataclass or dict"
     )
 
 
