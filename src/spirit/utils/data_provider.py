@@ -502,8 +502,26 @@ def get_data_provider() -> DataProvider:
             "Run `python3 -m spirit.setup` to configure, or set "
             "SPIRIT_TIER=free to run the local Free-tier stack."
         )
-    _provider = ApiDataProvider(base_url=base_url, api_key=api_key)
-    logger.info(f"DataProvider: api → {base_url}")
+    gateway = ApiDataProvider(base_url=base_url, api_key=api_key)
+
+    # BYOD branch (#666): Plus/Pro keys lost `read:ohlc` in #665. When
+    # preflight has populated capabilities AND they exclude `read:ohlc`,
+    # wrap the gateway in a PaidTierComposite that routes OHLC reads to
+    # a local Kraken-backed ExchangeBackedDataProvider. internal_canary +
+    # admin still carry `read:ohlc` and skip this branch — they keep the
+    # direct ApiDataProvider. Capabilities empty (no preflight: replay,
+    # tests) also keeps the direct path to avoid regression.
+    from spirit.utils.preflight import get_session_capabilities
+    caps = get_session_capabilities()
+    if caps and "read:ohlc" not in caps:
+        _provider = _wrap_paid_tier_byod(gateway)
+        logger.info(
+            f"DataProvider: paid-tier BYOD → gateway={base_url} "
+            f"+ local exchange (no read:ohlc capability)"
+        )
+    else:
+        _provider = gateway
+        logger.info(f"DataProvider: api → {base_url}")
 
     trace_path = get_config("SPIRIT_DATA_PROVIDER_TRACE", "")
     if not trace_path:
@@ -572,3 +590,36 @@ def _build_free_tier_provider():
         f"sqlite={sqlite_path} instance={instance}"
     )
     return CompositeDataProvider(reads=reads, writes=writes)
+
+
+def _wrap_paid_tier_byod(gateway):
+    """Build a PaidTierComposite for Plus/Pro keys missing read:ohlc (#666).
+
+    The OHLC source is an ExchangeBackedDataProvider over the configured
+    exchange (Kraken at v2.2.x). Everything else continues to route to
+    the gateway. Kept in its own helper so the factory branch stays
+    readable and tests can patch it without monkey-patching env vars.
+    """
+    import os
+
+    from spirit.utils.exchange_backed_data_provider import (
+        ExchangeBackedDataProvider,
+    )
+    from spirit.utils.paid_tier_composite import PaidTierComposite
+
+    exchange_name = (
+        os.environ.get("SPIRIT_EXCHANGE", "kraken").strip().lower()
+        or "kraken"
+    )
+    if exchange_name == "kraken":
+        from spirit.exchange.kraken import KrakenExchangeProvider
+        exchange = KrakenExchangeProvider()
+    else:
+        raise RuntimeError(
+            f"SPIRIT_EXCHANGE={exchange_name!r} is not bundled with "
+            "v2.2.x. Only 'kraken' ships at launch; add a plugin under "
+            "src/spirit/exchange/ and re-route here."
+        )
+
+    ohlc_source = ExchangeBackedDataProvider(exchange)
+    return PaidTierComposite(ohlc_source=ohlc_source, gateway=gateway)

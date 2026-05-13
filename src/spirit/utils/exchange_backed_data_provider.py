@@ -35,6 +35,7 @@ adapter converts it explicitly.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,17 @@ logger = get_logger("exchange_backed_data_provider")
 
 
 _PAIRS_PATH = Path(__file__).resolve().parent.parent / "storage" / "pairs.json"
+
+# Per-call chunk size for paged fetches. 720 is the common public-tier
+# limit across the exchanges Spirit talks to today; if a future
+# ExchangeProvider impl supports more (or less), expose this as a
+# protocol property and read it through.
+_CHUNK_SIZE = 720
+
+# Safety cap on paged calls. 60_000 1m candles = ~84 chunks; doubling
+# that leaves headroom without risking a runaway loop on a misbehaving
+# exchange that always returns full pages.
+_MAX_CHUNKS = 200
 
 
 def _ohlc_candle_to_dict(candle, pair: str, interval: int) -> dict:
@@ -87,12 +99,17 @@ class ExchangeBackedDataProvider:
         exchange: ExchangeProvider,
         *,
         pairs: list[dict] | None = None,
+        page_sleep_s: float = 1.5,
     ) -> None:
         self._exchange = exchange
         # Lazy-loaded from the bundled JSON; explicit override accepted for
         # tests + advanced users running on alt exchanges.
         self._pairs_override = pairs
         self._pairs_cache: list[dict] | None = None
+        # Inter-call pacing for paged fetches. Conservative default sits
+        # under Kraken anon-tier's counter recharge (1/sec) without
+        # tripping 429s on the OHLC endpoint (2-unit cost). Tests pass 0.
+        self._page_sleep_s = page_sleep_s
         logger.info(
             f"ExchangeBackedDataProvider initialised "
             f"(exchange={exchange.name})"
@@ -114,39 +131,132 @@ class ExchangeBackedDataProvider:
     ) -> list[dict]:
         """Fetch closed OHLC candles, adapted to the framework dict shape.
 
-        Filtering and ordering happen client-side after the exchange
-        responds. Bulk backfills (>720 candles for Kraken) are not in
-        Free-tier scope; consumers needing deep history should run a
-        Plus tier instance against the gateway.
+        Two fetch strategies:
+          - **No `start`**: single call to the exchange for the most-recent
+            min(limit, _CHUNK_SIZE) candles. Used for warm-up + recent-history
+            reads.
+          - **`start` provided**: paged fetch from `start` forward, chunking
+            _CHUNK_SIZE candles at a time, until `end` (if set), `limit`, or
+            the exchange runs out of data. Used for deep-history backfills
+            (e.g. trajectory recovery, BYOD OHLC sync — #666).
+
+        Filtering and ordering happen client-side after stitching.
         """
-        # Pull a generous window from the exchange; cap at the protocol's
-        # default 720 (Kraken's anonymous-tier limit). Larger limits land
-        # with provider-side pagination work, not here.
-        count = min(int(limit), 720)
-        raw = self._exchange.get_ohlc(pair, interval=interval, count=count)
+        if order not in ("asc", "desc"):
+            raise ValueError(f"order must be 'asc' or 'desc', got {order!r}")
+
+        start_aware = _to_aware_utc(start) if start is not None else None
+        end_aware = _to_aware_utc(end) if end is not None else None
+
+        if start_aware is None:
+            raw = self._fetch_recent(pair, interval, limit)
+        else:
+            raw = self._fetch_paged(
+                pair, interval, start_aware, end_aware, limit
+            )
 
         rows = [_ohlc_candle_to_dict(c, pair, interval) for c in raw]
 
         # Client-side window filter — half-open [start, end), matching
         # ApiDataProvider/SqliteDataProvider semantics.
-        if start is not None:
-            start = _to_aware_utc(start)
-            rows = [r for r in rows if r["datetime"] >= start]
-        if end is not None:
-            end = _to_aware_utc(end)
-            rows = [r for r in rows if r["datetime"] < end]
+        if start_aware is not None:
+            rows = [r for r in rows if r["datetime"] >= start_aware]
+        if end_aware is not None:
+            rows = [r for r in rows if r["datetime"] < end_aware]
 
         # Order: ExchangeProvider returns oldest-first; swap if 'desc'.
         if order == "desc":
             rows = list(reversed(rows))
-        elif order != "asc":
-            raise ValueError(f"order must be 'asc' or 'desc', got {order!r}")
 
         # Final limit cap (after filters, in chosen order).
         if len(rows) > limit:
             rows = rows[:limit]
 
         return rows
+
+    # ------------------------------------------------------------------
+    # Fetch strategies
+    # ------------------------------------------------------------------
+
+    def _fetch_recent(self, pair: str, interval: int, limit: int) -> list:
+        """Single call for the most-recent min(limit, _CHUNK_SIZE) candles."""
+        count = min(int(limit), _CHUNK_SIZE)
+        return list(self._exchange.get_ohlc(
+            pair, interval=interval, count=count
+        ))
+
+    def _fetch_paged(
+        self,
+        pair: str,
+        interval: int,
+        start: datetime,
+        end: datetime | None,
+        limit: int,
+    ) -> list:
+        """Page through `since`-cursored chunks from `start` forward.
+
+        Stops at the first of:
+          - chunk smaller than _CHUNK_SIZE (exchange has no more)
+          - last candle timestamp >= end (if set)
+          - collected >= limit (final trim happens upstream)
+          - _MAX_CHUNKS calls (defensive — should never trigger in practice)
+
+        Kraken's `since` is exclusive (timestamp > since), so the first
+        chunk includes a candle exactly at `start` only if we cursor one
+        second below it. Defensive timestamp-set dedup is applied in case
+        a future ExchangeProvider impl is inclusive at the boundary.
+        """
+        cursor = int(start.timestamp()) - 1
+        end_ts = int(end.timestamp()) if end is not None else None
+
+        collected: list = []
+        seen_ts: set[int] = set()
+
+        for chunk_idx in range(_MAX_CHUNKS):
+            chunk = list(self._exchange.get_ohlc(
+                pair,
+                interval=interval,
+                count=_CHUNK_SIZE,
+                since=cursor,
+            ))
+            if not chunk:
+                break
+
+            new_in_chunk = 0
+            for candle in chunk:
+                if candle.timestamp in seen_ts:
+                    continue
+                seen_ts.add(candle.timestamp)
+                collected.append(candle)
+                new_in_chunk += 1
+
+            last_ts = chunk[-1].timestamp
+
+            if len(chunk) < _CHUNK_SIZE:
+                break
+            if end_ts is not None and last_ts >= end_ts:
+                break
+            if len(collected) >= limit:
+                break
+            if new_in_chunk == 0:
+                logger.warning(
+                    f"[EXCHANGE] paged fetch made no progress at "
+                    f"cursor={cursor}, breaking. pair={pair} interval={interval}"
+                )
+                break
+
+            cursor = last_ts
+            if self._page_sleep_s > 0:
+                time.sleep(self._page_sleep_s)
+
+        else:
+            logger.warning(
+                f"[EXCHANGE] paged fetch hit _MAX_CHUNKS ({_MAX_CHUNKS}) "
+                f"for pair={pair} interval={interval} start={start.isoformat()} "
+                f"— returning partial data ({len(collected)} candles)"
+            )
+
+        return collected
 
     # ------------------------------------------------------------------
     # Pair registry
