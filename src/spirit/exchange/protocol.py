@@ -171,7 +171,12 @@ class ExchangeProvider(Protocol):
         ...
 
     def get_ohlc(
-        self, pair: str, interval: int = 60, count: int = 720
+        self,
+        pair: str,
+        interval: int = 60,
+        count: int = 720,
+        *,
+        since: int | None = None,
     ) -> list[OHLCCandle]:
         """Fetch recent closed OHLC candles from the exchange.
 
@@ -179,6 +184,11 @@ class ExchangeProvider(Protocol):
             pair:     Spirit pair name
             interval: Candle interval in minutes (1, 5, 15, 60, etc.)
             count:    Number of candles to return
+            since:    Unix epoch seconds. When set, return candles with
+                      timestamp strictly greater than `since` (exclusive),
+                      up to `count`. When None, return the most recent
+                      `count` closed candles. Used by adapter paging for
+                      deep-history fetches (>720 candles).
 
         Returns:
             List of OHLCCandle, oldest first. Only closed candles —
