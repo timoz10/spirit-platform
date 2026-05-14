@@ -38,7 +38,7 @@ The first public release candidate. Adds the Free tier (`pip install spirit-trad
 - **`spirit-uninstall` defaults to Free-tier-friendly mode** — reads the local SQLite directly to detect open positions instead of initialising the runtime DataProvider (which on Free tier dragged in the Kraken adapter just to read one row). Plus fall through to the DataProvider as before. (#600)
 - **Shutdown log line** no longer says "Final state saved to PG for all pairs" (misleading on Free tier, which uses SQLite). Now: `Final state saved for all pairs (instance=<name>)`. (#594)
 - **`KrakenOHLCBuffer` log lines** carry the pair + interval prefix instead of repeating identically across all 14 buffers (`[KrakenOHLCBuffer][XBTUSD/60m] Background updater stopped.`). (#594)
-- **Internal IP defaults removed.** `data_provider.py` and `preflight.py` defaulted `SPIRIT_API_URL` to `http://10.0.0.4:8000/v1` (an internal private-net IP). Defaults are now `https://api.tradebot.live/v1` — the public URL. Internal callers that still need the private endpoint set `SPIRIT_API_URL` explicitly. (#562)
+- **Public URL is now the default**. `data_provider.py` and `preflight.py` previously defaulted `SPIRIT_API_URL` to a private-net IP (the gateway's internal address inside the cloud network). Defaults are now `https://api.tradebot.live/v1` — the public URL — so a fresh install just works without an explicit env var. Internal callers that still need the private endpoint set `SPIRIT_API_URL` explicitly. (#562)
 
 ### Fixed
 
@@ -47,7 +47,7 @@ The first public release candidate. Adds the Free tier (`pip install spirit-trad
 - **`spirit-health` column-name drift.** Two SQL queries used PG-flavoured column names that don't match the canonical SQLite schema in `src/spirit/storage/sqlite_schema.sql`: `updated_at` (should be `last_heartbeat`) and `pnl_realized` (should be `pnl_pct`). Errors were swallowed silently, so every health run reported "(none)" for the heartbeat AND the last trade even when real rows existed. Plus a regression gate that builds the test DB from the canonical schema file so future drift fails CI. (#595)
 - **`spirit-uninstall` no longer prints "✓ Stopped + disabled spirit.service" on a no-systemd box.** Misleading wording when the systemd unit was never installed; now prints `- no systemd unit named spirit.service (skipping)` and skips the no-op `systemctl stop`/`disable` calls. (#600)
 - **`spirit-uninstall` correctly detects bare `python -m spirit.main` processes** that were started outside systemd. Pre-fix, the wizard would happily `rm -rf` the install tree out from under a live process. Now it SIGTERMs detected bare processes, waits up to 30s, and refuses (exit 3) to remove the install tree if any are still running unless `--force` is set. (#593)
-- **Internal-username sanitisation.** Three docstring examples in framework files surviving the public mirror filter referenced `'davy'` (an internal developer name). Replaced with the generic `'alice'`. (#562)
+- **Sanitised docstring examples** in three framework files (`pipeline/daemon_health.py`, `utils/pair_registry.py`, `setup.py`) — instance-name examples now use a generic placeholder instead of an internal username. (#562)
 
 ### Internal
 

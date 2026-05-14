@@ -52,7 +52,7 @@ def get_active_pairs(cache_ttl: int = 300, instance: Optional[str] = None) -> Li
 
     Args:
         cache_ttl: Cache lifetime in seconds (default 5 minutes).
-        instance: Spirit instance name (e.g. 'prod', 'davy'). When set,
+        instance: Spirit instance name (e.g. 'prod', 'alice'). When set,
                   returns pairs where instance IS NULL (shared) OR matches.
                   When None, returns all active pairs (backward compat for crons).
 
