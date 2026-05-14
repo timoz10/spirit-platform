@@ -17,67 +17,123 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-The first public release candidate. Adds the Free tier (`pip install spirit-platform`, no API key required, runs against your own Kraken keys), a customer-facing uninstall + health CLI, and a stack of launch-UX polish from a full Proxmox dry-run.
+_No unreleased changes yet._
+
+
+## [2.2.1] — 2026-05-14
+
+First public release. Spirit ships as `pip install spirit-platform` from PyPI. Free tier runs entirely on your machine against your own exchange keys; Plus and Pro extend with hosted D-Limit indicators, Bring-Your-Own-Data historical OHLC storage, and cloud-backed trade history with crash recovery.
 
 ### Added
 
-- **Free-tier framework** with pluggable `DataProvider` routing — Free uses local SQLite + your own Kraken keys; Plus continues with the API gateway. New modules: `SqliteDataProvider`, `ExchangeBackedDataProvider`, `CompositeDataProvider`, `pair_registry` static fallback. Setup wizard prompts for tier on first run. Bundled `sma_crossover` reference strategy registered as a built-in. (#561 / #564)
-- **Setup wizard polish** — questionary-based arrow-key UI, optional TradeBOT API key entry on Free, sensible value-defaults, normalised custom strategy name. (#569)
-- **`spirit-uninstall` wizard** — clean removal of an install: stops systemd unit (or SIGTERMs a bare `python -m spirit.main` process), removes the install tree, optionally purges local data and the spirit system user. Honest about scope — API key revocation stays the user's responsibility via the portal. (#591, #593, #595, #600)
+#### Free-tier framework
+
+- **Pluggable `DataProvider` routing** — Free uses local SQLite + your own Kraken keys; Plus continues with the API gateway. New modules: `SqliteDataProvider`, `ExchangeBackedDataProvider`, `CompositeDataProvider`, `pair_registry` static fallback. Setup wizard prompts for tier on first run. (#561 / #564)
+- **Two bundled reference strategies** at `src/spirit/strategies/examples/`:
+  - `sma_crossover` — minimum-viable demo. Subclass `BaseStrategy`, implement `evaluate_trade()`, nothing else. Read this first.
+  - `macd_demo` — full lifecycle tour. Multi-interval ATR stop via `on_monitoring_tick`, entry-confirmed state-stash, RSI/SMA200 filters, paper-by-default guard. All indicators computed in pandas — no `spirit.indicators.*` IP dependency. (#695)
+- **Strategy registry split** so the public mirror ships a working registry with the two bundled examples only. IP entries (zone_bounce, regime_engine, etc.) live in a private companion file imported with try/except. (#701)
+
+#### Bring Your Own Data (BYOD) — Plus / Pro
+
+- **`POST /v1/ohlc/upload`** — bulk CSV upload, Kraken CSV format native, multi-batch ingest with precise insert counts. (#681)
+- **`POST /v1/ohlc/append`** — incremental per-candle push, used by Spirit's runtime push-on-fetch on Pro tier. (#680)
+- **`GET /v1/ohlc/user`** — list uploaded batches with row counts and timestamps. (#681)
+- **`DELETE /v1/ohlc/user`** — two forms (`?pair=X&interval=Y&confirm=true` and `/batches/{batch_id}?confirm=true`). Confirm-guarded with a row-count preview when omitted. RLS-scoped to your instance. (#690 / #692)
+- **Tier-aware storage caps** — Plus 5M rows, Pro 25M rows, internal/admin unlimited. 413 response on exceeding cap, with the message pointing at the DELETE endpoint as the recovery path. (#691 / #693)
+- **`python3 -m spirit.backfill`** — standalone CLI for re-importing OHLC without re-running the setup wizard. Filename inference (`XBTUSDT_60.csv` → pair=XBTUSDT, interval=60); explicit flags override. (#686)
+- **Setup wizard CSV backfill prompt** — first-run wizard now asks whether to import Kraken CSV history when the API key carries `write:ohlc_user`. (#683)
+- **Runtime push-on-fetch + cloud-first read routing** — when Pro tier strategies pull recent OHLC, the candles are simultaneously pushed to `/v1/ohlc/append` so cloud-side storage stays current without a separate sync job. New env knob `SPIRIT_OHLC_SOURCE` (`auto` / `cloud_first` / `local_first`). (#682)
+- **Capability discovery + typed 403 + strategy preflight** — Spirit calls `/v1/whoami` at startup, intersects capabilities against the active strategy's `required_capabilities` property, and fails fast at startup rather than a 403 from a cold call site at 03:00 UTC. (#670)
+- **Migration 036** — revokes raw OHLC capability from `subscription` and `pro` roles; new `internal_canary` role retains OHLC for dev/CI use during the BYOD transition. (#665 / #669)
+- **Migration 037** — `user_ohlc_uploads` table + `write:ohlc_user` capability for paid tiers. (#675)
+
+#### Customer-facing CLI
+
+- **`spirit-uninstall` wizard** — clean removal of an install: stops the systemd unit (or SIGTERMs a bare `python -m spirit.main` process), removes the install tree, optionally purges local data and the spirit system user. Honest about scope — API key revocation stays the user's responsibility via the portal. (#591, #593, #595, #600)
 - **`spirit-health` CLI** — one-screen liveness summary reading the local SQLite (process state, last heartbeat + age, version, last trade, total trades). (#592)
 - **Periodic `[SPIRIT] alive` log line** every 30 minutes (configurable via `SPIRIT_ALIVE_LOG_INTERVAL_S`) so quiet strategies don't make a healthy install look hung. Independent of the DB heartbeat. (#592)
 - **Orphan-process guard at startup** — refuses to start if another `spirit.main` is already running, with a `--allow-multi-instance` override for legitimate Pro setups. (#592)
-- **Public-mirror infrastructure** — allow-list, dry-run filter script, procedure doc, LICENSE (Apache-2.0), `README.md.public`, `pyproject.toml.public` with slimmed dependency set (heavy ML/PG/TA deps stripped). The dry-run renames `.public` files at filter time so the public mirror gets a normal-looking tree. (#562)
-- **GitHub Actions workflows** for the Free-tier framework — pytest gate (165 tests, ~10s) + weekly Kraken network smoke. Both run on the existing self-hosted runner. (#564)
-- **Release publishing runbook** at `docs/RELEASE_PUBLISHING_RUNBOOK.md` — versioning, cadence, pre-release gates, tag procedure, public-mirror push, customer comms, hotfix fast-path, rollback procedures, post-release verification. (#587)
+
+#### Setup wizard
+
+- **Questionary-based arrow-key UI**, with plain `input()` fallback for non-TTY. (#569)
+- **Optional TradeBOT API key entry on Free** — stored locally, unused until the user upgrades; warm-on-ramp to Plus. (#569)
+- **Three built-in strategy choices**: `sma_crossover`, `macd_demo`, `custom`. (#696)
+- **Re-run pre-population** — running the wizard a second time reads existing `config/spirit.yaml` and offers current values as defaults. Previously every prompt reverted to its hardcoded default, silently overwriting a user's earlier answers. (#699)
+
+#### Public-mirror + PyPI infrastructure
+
+- **Allow-list-based mirror filter** at `docs/features/platform/PUBLIC_MIRROR_ALLOWLIST.txt`. Anything not listed is dropped from the public repo. (#562)
+- **Mirror dry-run script** at `scripts/public_mirror_dryrun.sh` — runs the filter into `/tmp/spirit-mirror-dryrun/` plus a sensitive-substring scan. (#562)
+- **Mirror push script** at `scripts/public_mirror_push.sh` — guarded wrapper around the production push. (#562)
+- **LICENSE (Apache-2.0)**, **`README.md.public`**, and **`pyproject.toml.public`** with slimmed dependency set (heavy ML/PG/TA deps stripped). The push script renames `.public` files at filter time so the public mirror has a normal-looking tree. (#562)
+- **Pip package name `spirit-platform`** matches the GitHub repo name. (#705)
+- **GitHub Action `.github/workflows/publish.yml`** builds + publishes via OIDC trusted publishing — no stored API tokens. Routes RC tags (`v2.2.1-rc*`) to TestPyPI, full tags (`v2.2.1`) to PyPI. (#706)
+
+#### Documentation
+
+- **Release publishing runbook** at `docs/RELEASE_PUBLISHING_RUNBOOK.md` — versioning, cadence, pre-release gates, tag procedure, public-mirror push, customer comms, hotfix fast-path, rollback procedures, post-release verification. (#587 / #601)
+- **`docs/reference/EXCHANGE_PLUGIN_GUIDE.md`** — protocol reference for writing a non-Kraken exchange adapter.
+- **Two architecture blog posts** (queued for Ghost): *Inside Spirit Orchestrator* (orchestrator + DataProvider + RiskGate walkthrough) and *Anatomy of a Spirit Strategy* (line-by-line `macd_demo.py` walkthrough).
 
 ### Changed
 
+- **Pip package name**: `spirit-trading` → `spirit-platform`. Matches the GitHub repo name (`timoz10/spirit-platform`); one less name for users to remember. (#705)
 - **API keys no longer carry a tier prefix.** New keys are `sk_<token>` only; tier lives on the `api_keys.role` column. Existing keys with the old prefix continue to work — auth hashes the full string and looks up by hash. No DB migration required. Fixes the "user upgrades Free → Plus but key still says `sk_free_…`" UX problem. (#570 / #589)
-- **`__version__` and `pyproject.toml` aligned with the public release tag.** Internal counter scheme (was bumping toward 2.11.0) replaced with the tag scheme (2.2.1) from this release onward. CI gate (#568) keeps the two strings in lock-step. (#588)
+- **Public URL is now the default.** `data_provider.py` and `preflight.py` previously defaulted `SPIRIT_API_URL` to a private-net IP (the gateway's internal address inside the cloud network). Defaults are now `https://api.tradebot.live/v1` — the public URL — so a fresh install just works without an explicit env var. Internal callers that still need the private endpoint set `SPIRIT_API_URL` explicitly. (#562 / #702)
+- **`__version__` and `pyproject.toml` aligned with the public release tag.** Internal counter scheme (was bumping toward 2.11.0) replaced with the tag scheme (2.2.1) from this release onward. CI gate keeps the two strings in lock-step. (#568 / #588)
 - **`spirit-uninstall` defaults to Free-tier-friendly mode** — reads the local SQLite directly to detect open positions instead of initialising the runtime DataProvider (which on Free tier dragged in the Kraken adapter just to read one row). Plus fall through to the DataProvider as before. (#600)
 - **Shutdown log line** no longer says "Final state saved to PG for all pairs" (misleading on Free tier, which uses SQLite). Now: `Final state saved for all pairs (instance=<name>)`. (#594)
-- **`KrakenOHLCBuffer` log lines** carry the pair + interval prefix instead of repeating identically across all 14 buffers (`[KrakenOHLCBuffer][XBTUSD/60m] Background updater stopped.`). (#594)
-- **Public URL is now the default**. `data_provider.py` and `preflight.py` previously defaulted `SPIRIT_API_URL` to a private-net IP (the gateway's internal address inside the cloud network). Defaults are now `https://api.tradebot.live/v1` — the public URL — so a fresh install just works without an explicit env var. Internal callers that still need the private endpoint set `SPIRIT_API_URL` explicitly. (#562)
+- **`KrakenOHLCBuffer` log lines** carry the pair + interval prefix instead of repeating identically across all buffers (`[KrakenOHLCBuffer][XBTUSD/60m] Background updater stopped.`). (#594)
+- **Portal tier label** — shows "Plus" instead of the raw DB role name "subscription" on the portal welcome page. DB column unchanged; display only. (#684)
 
 ### Fixed
 
-- **`SpiritContext` warmup primes every declared interval**, not just the primary. Pre-fix, monitoring intervals (e.g. 1m for ATR stops on `zone_bounce` / `macd_cross`) silently started cold for ~50 minutes after every restart, with feature engineering no-op'ing on incoming candles. Affected any strategy with `monitoring_intervals` declared; `sma_crossover` (no monitoring intervals) was unaffected. (#572 / #575)
-- **`spirit-uninstall --dry-run` now shows what a live run would do.** Detection of bare `spirit.main` processes was short-circuited in dry-run, giving a false impression that nothing would happen — even though a real run absolutely would SIGTERM the process. Detection is read-only (`pgrep`) and now runs in dry-run too; `stop_bare_processes` has its own dry-run path that prints `[DRY-RUN] Would SIGTERM PID X`. (#595)
-- **`spirit-health` column-name drift.** Two SQL queries used PG-flavoured column names that don't match the canonical SQLite schema in `src/spirit/storage/sqlite_schema.sql`: `updated_at` (should be `last_heartbeat`) and `pnl_realized` (should be `pnl_pct`). Errors were swallowed silently, so every health run reported "(none)" for the heartbeat AND the last trade even when real rows existed. Plus a regression gate that builds the test DB from the canonical schema file so future drift fails CI. (#595)
-- **`spirit-uninstall` no longer prints "✓ Stopped + disabled spirit.service" on a no-systemd box.** Misleading wording when the systemd unit was never installed; now prints `- no systemd unit named spirit.service (skipping)` and skips the no-op `systemctl stop`/`disable` calls. (#600)
-- **`spirit-uninstall` correctly detects bare `python -m spirit.main` processes** that were started outside systemd. Pre-fix, the wizard would happily `rm -rf` the install tree out from under a live process. Now it SIGTERMs detected bare processes, waits up to 30s, and refuses (exit 3) to remove the install tree if any are still running unless `--force` is set. (#593)
-- **Sanitised docstring examples** in three framework files (`pipeline/daemon_health.py`, `utils/pair_registry.py`, `setup.py`) — instance-name examples now use a generic placeholder instead of an internal username. (#562)
+- **Orphan-process guard false-positive on shell/tmux wrappers.** `pgrep -f spirit.main` matched the launcher's parent processes (bash, tmux) when their argv contained the launch command string, so Spirit refused to start via the documented `tmux new-session "... python3 -m spirit.main ..."` pattern. Fixed by verifying `argv[0]` is a real Python interpreter or the installed `spirit` console script. (#698)
+- **Free-tier provider reads yaml via `get_config`, not `os.environ` directly.** Setup wizard writes to `config/spirit.yaml`; the Free-tier provider builder previously read only env vars, so a wizard-set `SPIRIT_INSTANCE: test-vm` was silently dropped and the SQLite path fell back to `~/.spirit/local/`. (#699)
+- **Strategy registry public/IP split** so the public mirror ships a working `strategy_config.py` without leaking IP module paths. Without this, the public ship would have included `macd_demo.py` without a registry entry that could load it. (#701)
+- **`macd_demo` registration in `_STRATEGY_REGISTRY`** + wizard third-option entry. `SPIRIT_STRATEGY=macd_demo` now resolves correctly. (#696)
+- **CSV upload serializer + bulk-insert rowcount accuracy.** `_user_candle_to_wire` dict branch read `"datetime"` but the CSV reader yields `"timestamp"`, so every CSV-derived candle hit the gateway with `"timestamp": "None"` → 422 across every chunk. Plus: `cur.rowcount` reflected only the last sub-batch under psycopg2's default `page_size=100`, so the gateway reported wildly wrong insert counts. (#687 / #688)
+- **`SpiritContext` warmup primes every declared interval**, not just the primary. Pre-fix, monitoring intervals (e.g. 1m for ATR stops on `zone_bounce` / `macd_cross`) silently started cold for ~50 minutes after every restart. Affected any strategy with `monitoring_intervals` declared; `sma_crossover` was unaffected. (#572 / #575)
+- **`spirit-uninstall --dry-run` now shows what a live run would do.** Detection of bare `spirit.main` processes was short-circuited in dry-run, giving a false impression that nothing would happen — even though a real run absolutely would SIGTERM the process. (#595)
+- **`spirit-health` column-name drift.** Two SQL queries used PG-flavoured column names that don't match the canonical SQLite schema (`updated_at` vs `last_heartbeat`, `pnl_realized` vs `pnl_pct`). Errors were swallowed silently, so every health run reported "(none)" for the heartbeat AND the last trade even when real rows existed. Plus a regression gate that builds the test DB from the canonical schema file so future drift fails CI. (#595)
+- **`spirit-uninstall` no longer prints "✓ Stopped + disabled spirit.service" on a no-systemd box.** (#600)
+- **`spirit-uninstall` correctly detects bare `python -m spirit.main` processes** started outside systemd, and refuses (exit 3) to remove the install tree if any are still running unless `--force` is set. (#593)
+- **Preflight default URL** now defaults to the public `https://api.tradebot.live/v1` instead of an internal-network address. Matches the other call sites. (#702)
+- **`trade_types.py` shipped in the public mirror.** Both bundled example strategies import `TradeRecord` from this module; without it in the allow-list the examples would have shipped uninstantiable. (#703)
+- **Public-README correctness pass** — corrected the `BaseStrategy` code snippet (was `SpiritStrategy` with wrong method signatures), dropped a dead `docs/reference/platform/` link, dropped a fake blog-post link, removed an internal-canary reference, switched commercial contact to `support@tradebot.live`. (#703, #704, #707, #708)
+- **WS subscription roles**: `internal_canary` + `admin` can subscribe to paid channels (was incorrectly gated on `subscription`/`pro` only). (#671)
+- **Internal-username sanitisation** in three framework docstring examples surviving the public mirror filter (`pipeline/daemon_health.py`, `utils/pair_registry.py`, `setup.py`) — instance-name examples now use a generic placeholder. (#562)
 
 ### Internal
 
 - **Calibrators stop spamming ERROR on tier-gated 403s.** Bridge mitigation until `/v1/me` capability advertisement (#597 / #598) lands. Each of the 6 capability-gated calibrators (`cooldown`, `risk_gate`, `entry_quality`, `composite_threshold`, `thesis_writer`, `bounce_signature`) now detects 403, logs INFO once with an upgrade hint, and skips subsequent retries for the lifetime of the process. Pro/admin keys unaffected. (#599)
-- **CX22 canary API key bumped subscription → pro** (migration 035) so the canary exercises the full Pro stack including the calibration endpoints gated on `read:scorer`. (#596)
-- **`runtime_lock.py` orphan-process detection** module — used by both startup (refuses to launch with another Spirit running) and uninstall (SIGTERMs bare processes before removing files). (#592 / #593)
+- **Canary API key bumped subscription → pro** (migration 035) so the canary exercises the full Pro stack including the calibration endpoints gated on `read:scorer`. (#596)
+- **`runtime_lock.py` orphan-process detection** module — used by both startup (refuses to launch with another Spirit running) and uninstall (SIGTERMs bare processes before removing files). (#592 / #593, #698)
 - **`capability_check.py` helper** — `is_403_forbidden`, `is_capability_denied`, `mark_capability_denied`. Process-lifetime de-dup so the same caller doesn't log the same tier-gap twice. (#599)
-- **Substantial test coverage added** — 44 SqliteDataProvider tests (Rule 11 type round-trip, schema migration, crash recovery, heartbeat, performance, DST regression), 29 uninstall tests, 19 health tests (incl. schema-drift gates that build the test DB from the canonical schema file), 12 runtime-lock tests, 15 capability-check tests, plus 6 multi-interval warmup tests for #572.
+- **Portal chrome / styling**: sync with theme + new `docs/reference/platform/WEB_FRONTEND_ARCHITECTURE.md` (#656), account popout polish + wider for long emails (#657), "Spirit Portal" H1 (was "Portal") (#658).
+- **`scripts/push_blog_post.py`** — convert markdown + POST to Ghost as draft. (#659)
+- **Substantial test coverage added** — 44 SqliteDataProvider tests (Rule 11 type round-trip, schema migration, crash recovery, heartbeat, performance, DST regression), 29 uninstall tests, 19 health tests, 12 runtime-lock tests (incl. 11 covering the shell/tmux false-positive fix), 15 capability-check tests, 6 multi-interval warmup tests, 9 strategy-registration tests across sma_crossover + macd_demo, 6 strategy-registry split tests, 3 yaml-driven free-tier smoke tests, 8 wizard yaml-rerun tests.
 
 ### Tracked follow-ups (filed but not in this release)
 
 | # | Topic |
 |---|---|
-| #565 | Add v2.2.1 framework files to PUBLIC_MIRROR_ALLOWLIST (closed by #562) |
-| #570 | Drop tier prefix from new API keys (closed by #589) |
-| #572 | SpiritContext warmup primes the primary interval only (closed by #575) |
 | #577 | Portal: paid tiers not visible at signup; rename Subscriber → Plus |
 | #579 | Portal: welcome email + key-issuance flow on tier upgrade |
 | #580 | Platform: terms of service + privacy policy for paid tiers |
 | #582 | Platform: public status / uptime page |
 | #583 | Platform: monitoring + alerting stack for solo-on-call posture |
-| #584 | Platform: CX33 gateway patching + zero-downtime deploy runbook |
-| #585 | Platform: CX22 in-flight update procedure |
+| #584 | Platform: Gateway patching + zero-downtime deploy runbook |
+| #585 | Platform: In-flight update procedure for live instances |
 | #586 | Platform: end-to-end paid-tier signup smoke test |
-| #587 | Platform: release publishing process (this runbook in progress) |
 | #597 | Gateway: `GET /v1/me` endpoint — expose role + capabilities |
 | #598 | Spirit: read `/v1/me` capabilities at startup, skip endpoints the tier doesn't allow |
 | #417 (scope #2) | Customer-facing self-revoke API endpoint (scope #1 closed by #591/#593) |
+| #697 | Setup: non-interactive mode for agent / CI / automation driven install |
+| #700 | Setup: wizard re-run should detect existing instance dirs + offer data migration |
 
----
 
 ## [2.2.0] — 2026-05-05
 
@@ -97,5 +153,6 @@ For pre-2.2.0 changes (versions 2.0 through 2.10.x — internal counter scheme, 
 
 ---
 
-[Unreleased]: https://github.com/timoz10/spirit-platform/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/timoz10/spirit-platform/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/timoz10/spirit-platform/releases/tag/v2.2.1
 [2.2.0]: https://github.com/timoz10/spirit-platform/releases/tag/v2.2.0
