@@ -1,0 +1,112 @@
+# Publish spirit-platform to PyPI / TestPyPI on tag push.
+#
+# Triggered by tags pushed to the public mirror repo. The rename to
+# match the GitHub repo name + first PyPI publish discussion is in #705.
+#
+# Routing:
+#   - Tags matching v*-rc* / v*-test* (e.g. v2.2.1-rc1)  →  TestPyPI
+#   - Tags matching v* without rc/test                    →  PyPI
+#
+# Auth: trusted publishing via OIDC. NO API tokens stored anywhere.
+# PyPI + TestPyPI both have pending publishers configured against
+# (owner=timoz10, repo=spirit-platform, workflow=publish.yml, env=<pypi|testpypi>).
+# First successful upload claims the package name and converts the
+# pending publisher into an active one.
+#
+# Permissions:
+#   id-token: write  — required for OIDC token exchange with PyPI
+#   contents: read   — actions/checkout default
+#
+# Environment names are intentional: GitHub Environment configuration
+# can later add manual-approval gates per env without changing this file.
+
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build wheel + sdist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          # Fetch the tag commit only — we don't need history here.
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Inventory built distributions
+        run: ls -la dist/
+
+      - name: Upload distributions as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  publish-testpypi:
+    name: Publish to TestPyPI (release candidates)
+    needs: build
+    runs-on: ubuntu-latest
+    # Trigger TestPyPI ONLY for rc / test tags (e.g. v2.2.1-rc1).
+    # Full-release tags (v2.2.1) skip this job and route to PyPI below.
+    if: contains(github.ref, '-rc') || contains(github.ref, '-test')
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/spirit-platform/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI via trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # print-hash makes the run log carry the wheel SHA — useful for
+          # post-publish audit of what was actually uploaded.
+          print-hash: true
+
+  publish-pypi:
+    name: Publish to PyPI (full releases)
+    needs: build
+    runs-on: ubuntu-latest
+    # Full-release tags only — exclude rc / test pre-release suffixes.
+    if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-test') }}
+    environment:
+      name: pypi
+      url: https://pypi.org/project/spirit-platform/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI via trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
