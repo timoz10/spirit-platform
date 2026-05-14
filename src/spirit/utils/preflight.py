@@ -152,7 +152,7 @@ def _check_gateway_capabilities() -> CheckResult:
     from spirit.utils.config_loader import get_config
 
     base_url = get_config("SPIRIT_API_URL", "") or os.environ.get(
-        "SPIRIT_API_URL", "http://10.0.0.4:8000/v1"
+        "SPIRIT_API_URL", "https://api.tradebot.live/v1"
     )
     api_key = get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
 
