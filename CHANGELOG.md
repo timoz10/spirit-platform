@@ -17,7 +17,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-The first public release candidate. Adds the Free tier (`pip install spirit-trading`, no API key required, runs against your own Kraken keys), a customer-facing uninstall + health CLI, and a stack of launch-UX polish from a full Proxmox dry-run.
+The first public release candidate. Adds the Free tier (`pip install spirit-platform`, no API key required, runs against your own Kraken keys), a customer-facing uninstall + health CLI, and a stack of launch-UX polish from a full Proxmox dry-run.
 
 ### Added
 
