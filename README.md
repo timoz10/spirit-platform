@@ -14,22 +14,15 @@ python3 -m spirit.setup     # interactive setup wizard
 python3 -m spirit.main --mode paper
 ```
 
-Run the wizard once (it asks your tier, instance name, and Kraken API keys), pick one of the bundled examples (`sma_crossover` or `macd_demo`) or drop your own file in `~/.spirit/strategies/`, and Spirit starts paper-trading.
+Run the wizard once (it asks your tier, instance name, and optionally your Kraken API keys — only needed for live trading), pick one of the bundled examples (`sma_crossover` or `macd_demo`) or drop your own file in `~/.spirit/strategies/`, and Spirit starts paper-trading.
 
 To go live, swap `--mode paper` for `--mode live` once you've sanity-checked the paper P&L.
 
 ---
 
-## Tiers
+## Tiers and pricing
 
-| Tier | Price | What you get |
-|------|-------|--------------|
-| **Free** | £0 | Local SQLite storage. OHLC data direct from your exchange (Kraken module included). Run Spirit in paper mode and learn the framework. No live trading, no D-Limit access. |
-| **Plus** | £15/mo | Full D-Limit indicators (zones, trend states, swing detection), cloud-backed trade history with crash recovery, live trading enabled, push-based WebSocket events. The default for serious paper-trading or running real money. |
-
-A **Pro** tier is on the roadmap once the V3 confidence scorer, full orderbook intelligence, and our hosted OHLC feed are all production-ready. Until then, Plus is the top of the stack.
-
-Get a key at [portal.tradebot.live](https://portal.tradebot.live).
+See [portal.tradebot.live](https://portal.tradebot.live) for tier details, pricing, and what each level adds.
 
 ---
 
@@ -70,6 +63,7 @@ src/spirit/
   config.py                - .env / yaml loader
   trade_signal.py          - signal dataclass
   trade_status.py          - status dataclass
+  trade_types.py           - TradeRecord dataclass (used by strategies)
   exchange/                - exchange adapter protocol + Kraken impl
   pipeline/                - WebSocket event bus, freshness cache, daemon health
   storage/                 - local SQLite schema (Free tier)
@@ -109,4 +103,4 @@ The framework is free to use, modify, and redistribute. Plus / Pro subscriptions
 
 - Portal + key management: [portal.tradebot.live](https://portal.tradebot.live)
 - Issue tracker: GitHub Issues on this repo
-- For commercial / integration questions: tim@tradebot.live
+- For commercial / integration questions: support@tradebot.live
