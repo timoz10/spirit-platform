@@ -285,7 +285,9 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
         "Strategy",
         choices=[
             ("sma_crossover",
-             "sma_crossover — bundled example, paper-mode-by-default"),
+             "sma_crossover — minimal example, paper-mode-by-default"),
+            ("macd_demo",
+             "macd_demo — full-stack example (MACD cross + RSI/trend filters + ATR stop)"),
             ("custom",
              "Custom — drop your own under ~/.spirit/strategies/"),
         ],
@@ -309,7 +311,8 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
             print(f"  Create the file before starting Spirit, or pick a")
             print(f"  built-in strategy by re-running setup.")
     else:
-        yaml_values["SPIRIT_STRATEGY"] = "sma_crossover"
+        # Built-in selected — write whatever the user picked verbatim.
+        yaml_values["SPIRIT_STRATEGY"] = strat_choice
 
     yaml_values["SPIRIT_MODE"] = "paper"
 
