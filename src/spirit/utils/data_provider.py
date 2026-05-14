@@ -491,7 +491,7 @@ def get_data_provider() -> DataProvider:
 
     from spirit.utils.api_data_provider import ApiDataProvider
 
-    base_url = get_config("SPIRIT_API_URL", "http://10.0.0.4:8000/v1")
+    base_url = get_config("SPIRIT_API_URL", "https://api.tradebot.live/v1")
     api_key = get_config("SPIRIT_API_KEY", "")
     if not api_key:
         import os
