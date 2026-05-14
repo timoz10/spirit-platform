@@ -1,8 +1,8 @@
 # Spirit
 
-A programmable cryptocurrency trading platform. Run it on your own hardware, write your own strategies, keep your decisions on your own box.
+Spirit is a programmable cryptocurrency trading platform — a playground for building and testing your own trading strategies in Python. It runs on your own hardware, talks to exchanges directly, and you own the strategy logic end-to-end.
 
-Spirit is the framework — the strategy is yours. There's no "buy this, sell that" service. There's a Python plugin loader, a market-data feed (free, direct from Kraken — or paid, with our hosted indicators on top), and an exchange adapter.
+The framework is open source under Apache-2.0. Spirit handles the orchestration — market data, order placement, lifecycle hooks, crash recovery. As your strategies mature, Plus and Pro open up access to our custom technical indicators and cloud storage for backtesting.
 
 ---
 
