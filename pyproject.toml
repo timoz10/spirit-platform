@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "spirit-trading"
+name = "spirit-platform"
 version = "2.2.1"
 description = "Programmable cryptocurrency trading platform — write your own strategies, run on your own hardware"
 readme = "README.md"
