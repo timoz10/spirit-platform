@@ -50,7 +50,7 @@ examples — both files are heavily commented teaching artifacts:
 
 Drop your own under `~/.spirit/strategies/` and Spirit picks it up at next startup.
 
-For the conceptual walkthrough, see the blog post [*Anatomy of a Spirit Strategy*](https://www.tradebot.live/) which walks `macd_demo.py` top-to-bottom.
+For more information visit [www.tradebot.live](https://www.tradebot.live).
 
 ---
 
@@ -80,14 +80,13 @@ Implementation details for the bundled D-Limit indicators, V3 scorer, and risk-g
 
 ## Bring your own exchange
 
-Spirit ships with a Kraken adapter. To target a different exchange, implement the `ExchangeProvider` protocol in `src/spirit/exchange/protocol.py` and register it. See `docs/reference/EXCHANGE_PLUGIN_GUIDE.md` for the full guide.
+Spirit ships with a default Kraken adapter. To target a different exchange, implement the `ExchangeProvider` protocol in `src/spirit/exchange/protocol.py` and register it. See `docs/reference/EXCHANGE_PLUGIN_GUIDE.md` for the full guide.
 
 ---
 
 ## Status
 
 - **v2.2.1** — first public release. Free + Plus tiers, single-machine deploy, paper or live mode.
-- Production canary on Hetzner runs the same framework code, paper-mode, 24/7 — same orchestrator, same data providers, same lifecycle hooks. Strategy differs (canary runs a private IP strategy), but the platform you install is the same platform we run.
 
 ---
 
