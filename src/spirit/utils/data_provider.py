@@ -546,7 +546,13 @@ def _build_free_tier_provider():
     """Construct a CompositeDataProvider for the Free tier.
 
     Wired separately so testers can patch the exchange/sqlite delegates
-    without re-implementing the env-var resolution. Resolution order:
+    without re-implementing the env-var resolution.
+
+    Resolution must go through `get_config()`, not `os.environ` directly
+    — `get_config` checks env first, then `config/spirit.yaml` (which is
+    where the setup wizard writes), then the default. Using `os.environ`
+    here silently ignores yaml-written values, so a wizard-set
+    `SPIRIT_INSTANCE: test-vm` would land at the wrong SQLite path.
 
       SPIRIT_INSTANCE          → instance name (default: 'local')
       SPIRIT_SQLITE_PATH       → explicit DB path override
@@ -554,25 +560,26 @@ def _build_free_tier_provider():
       SPIRIT_FREE_EXCHANGE     → exchange name override
                                  (default: 'kraken' — the only one shipped)
     """
-    import os
     from pathlib import Path
 
     from spirit.utils.composite_data_provider import CompositeDataProvider
+    from spirit.utils.config_loader import get_config
     from spirit.utils.exchange_backed_data_provider import (
         ExchangeBackedDataProvider,
     )
     from spirit.utils.sqlite_data_provider import SqliteDataProvider
 
-    instance = os.environ.get("SPIRIT_INSTANCE", "local").strip() or "local"
-    sqlite_path = os.environ.get("SPIRIT_SQLITE_PATH", "").strip()
+    instance = (get_config("SPIRIT_INSTANCE", "local") or "local").strip() or "local"
+    sqlite_path = (get_config("SPIRIT_SQLITE_PATH", "") or "").strip()
     if not sqlite_path:
         sqlite_path = str(
             Path("~/.spirit").expanduser() / instance / "spirit.db"
         )
 
-    exchange_name = os.environ.get(
-        "SPIRIT_FREE_EXCHANGE", "kraken",
-    ).strip().lower() or "kraken"
+    exchange_name = (
+        (get_config("SPIRIT_FREE_EXCHANGE", "kraken") or "kraken")
+        .strip().lower() or "kraken"
+    )
     if exchange_name == "kraken":
         from spirit.exchange.kraken import KrakenExchangeProvider
         exchange = KrakenExchangeProvider()
