@@ -25,63 +25,76 @@ logger = get_logger("strategy_config")
 
 # ---------------------------------------------------------------------------
 # Strategy registry: name → (aliases, module_path, class_name)
+#
+# Public entries ship on every tier (this file is allow-listed). IP entries
+# live in the private companion `spirit._strategy_registry_ip` which is NOT
+# in the public-mirror allow-list — so the public Spirit build lands at the
+# try/except below with ImportError and gets the two bundled examples only.
+# Internal / Plus / Pro builds carry the companion file and pick up the full
+# registry transparently.
+#
+# Splitting the registry like this means strategy_config.py can be safely
+# public-shipped without leaking IP strategy module paths. Same fault-class
+# fix as #696: the registry is the gateway between SPIRIT_STRATEGY=<name>
+# and the actual class, so anything that ships needs a matching entry, and
+# anything that doesn't ship MUST NOT have an entry pointing at a missing
+# module.
 # ---------------------------------------------------------------------------
-_STRATEGY_REGISTRY = {
-    "zone_bounce": {
-        "aliases": {"zone", "decision_engine_v2"},
-        "module": "spirit.strategies.zone_bounce",
-        "class": "ZoneBounceStrategy",
-    },
-    "regime_engine": {
-        "aliases": {"regime", "decision_engine"},
-        "module": "spirit.strategies.experimental.regime_engine",
-        "class": "RegimeEngineStrategy",
-    },
-    "test": {
-        "aliases": {"test_algo"},
-        "module": "spirit.strategies.experimental.test_algo",
-        "class": "TestStrategy",
-    },
-    "macd_cross": {
-        "aliases": {"macd_full", "macd_full_algo", "macd_1.0", "macd_1_0"},
-        "module": "spirit.strategies.experimental.macd_cross",
-        "class": "MACD_full_algo",
-    },
-    "spine": {
-        "aliases": {"multi", "orchestrator"},
-        "module": "spirit.strategies.experimental.spine",
-        "class": "SpineStrategy",
-    },
-    "rsi_reversion": {
-        "aliases": {"rsi", "rsi_mean_reversion"},
-        "module": "spirit.strategies.experimental.rsi_reversion",
-        "class": "RsiReversionStrategy",
-    },
-    # Bundled Free-tier example. Lives under strategies/examples/ rather
-    # than experimental/ so it ships in the public-mirror allow-list.
-    # Uses only FrameworkDataProvider; safe to run on Free tier.
-    "sma_crossover": {
-        "aliases": {"sma", "sma_cross"},
-        "module": "spirit.strategies.examples.sma_crossover",
-        "class": "SmaCrossoverStrategy",
-    },
-    # Second bundled Free-tier example. Exercises the full BaseStrategy
-    # lifecycle (monitoring_intervals, on_entry_confirmed,
-    # on_monitoring_tick, on_exit_completed). Computes its own MACD/RSI/
-    # SMA/ATR in pandas; no spirit.indicators.* dependency.
-    "macd_demo": {
-        "aliases": {"macd_demo_example"},
-        "module": "spirit.strategies.examples.macd_demo",
-        "class": "MacdDemoStrategy",
-    },
-}
 
-# Build reverse lookup: alias → canonical name
-_ALIAS_MAP: Dict[str, str] = {}
-for canonical, entry in _STRATEGY_REGISTRY.items():
-    _ALIAS_MAP[canonical] = canonical
-    for alias in entry["aliases"]:
-        _ALIAS_MAP[alias] = canonical
+
+def _build_registry() -> Dict[str, Dict[str, Any]]:
+    """Build the strategy registry, merging IP entries when available.
+
+    Returns the public-only set if `spirit._strategy_registry_ip` isn't
+    importable (public mirror ship). Returns the full set otherwise.
+
+    Factored as a function so tests can call it directly with patched
+    imports and assert the two-tier behaviour. Module-level callers get
+    the resolved registry via `_STRATEGY_REGISTRY` below.
+    """
+    registry: Dict[str, Dict[str, Any]] = {
+        # Bundled Free-tier example. Lives under strategies/examples/ so
+        # it ships in the public-mirror allow-list. Uses only the
+        # FrameworkDataProvider; safe to run on Free tier.
+        "sma_crossover": {
+            "aliases": {"sma", "sma_cross"},
+            "module": "spirit.strategies.examples.sma_crossover",
+            "class": "SmaCrossoverStrategy",
+        },
+        # Second bundled Free-tier example. Exercises the full
+        # BaseStrategy lifecycle (monitoring_intervals,
+        # on_entry_confirmed, on_monitoring_tick, on_exit_completed).
+        # Computes its own MACD/RSI/SMA/ATR in pandas — no
+        # spirit.indicators.* dependency.
+        "macd_demo": {
+            "aliases": {"macd_demo_example"},
+            "module": "spirit.strategies.examples.macd_demo",
+            "class": "MacdDemoStrategy",
+        },
+    }
+    try:
+        from spirit._strategy_registry_ip import IP_REGISTRY
+        registry.update(IP_REGISTRY)
+    except ImportError:
+        # Public mirror ship — no IP entries. Users write their own
+        # strategies under ~/.spirit/strategies/ and load via the
+        # 'custom' path. This is the expected branch for Free tier.
+        pass
+    return registry
+
+
+def _build_alias_map(registry: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """Reverse-lookup alias → canonical name, built fresh from `registry`."""
+    alias_map: Dict[str, str] = {}
+    for canonical, entry in registry.items():
+        alias_map[canonical] = canonical
+        for alias in entry["aliases"]:
+            alias_map[alias] = canonical
+    return alias_map
+
+
+_STRATEGY_REGISTRY = _build_registry()
+_ALIAS_MAP: Dict[str, str] = _build_alias_map(_STRATEGY_REGISTRY)
 
 
 def get_spine_config() -> Dict[str, Any]:
