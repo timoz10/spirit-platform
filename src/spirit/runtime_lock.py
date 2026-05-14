@@ -33,8 +33,69 @@ def _pgrep_available() -> bool:
     return shutil.which("pgrep") is not None
 
 
+def _read_pid_cmdline_argv(pid: int) -> list[str]:
+    """Read `/proc/<pid>/cmdline` and return it as a list of args.
+
+    `/proc/<pid>/cmdline` is null-separated. Returns [] on any read
+    error (missing /proc, vanished process, permission denied).
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read()
+    except (FileNotFoundError, PermissionError, OSError):
+        return []
+    if not raw:
+        return []
+    # Strip trailing NUL the kernel often appends.
+    parts = raw.split(b"\0")
+    return [p.decode("utf-8", errors="replace") for p in parts if p]
+
+
+def _argv_looks_like_spirit(argv: list[str]) -> bool:
+    """Return True if argv is from a real Spirit Python process.
+
+    Distinguishes:
+      - `python3 -m spirit.main ...` (dev launch)             → True
+      - `python3 /path/to/spirit/main.py ...`                  → True
+      - `/venv/bin/spirit ...` (installed console script)      → True
+      - `bash -c "... python3 -m spirit.main ..."`             → False
+      - `tmux new-session "... python3 -m spirit.main ..."`    → False
+      - `sh -c "..."` / `setsid ...` and other wrappers        → False
+
+    The shell-wrapper cases are why this exists: `pgrep -f` matches the
+    pattern against the FULL joined argv of every process, so any
+    parent shell that mentions `spirit.main` in its argv string is a
+    false positive. Discriminating by argv[0] separates the actual
+    Python interpreter from shells/launchers that merely reference it.
+    """
+    if not argv:
+        return False
+    arg0 = os.path.basename(argv[0]).lower()
+    # Python interpreters: python, python3, python3.12, pythonw, etc.
+    if arg0.startswith("python"):
+        return True
+    # Installed console script — pip places a shim at `<venv>/bin/spirit`
+    # whose argv[0] is the script path, not python. The shim itself
+    # imports spirit.main:main and calls it.
+    if arg0 == "spirit":
+        return True
+    return False
+
+
 def detect_other_spirit_processes() -> list[int]:
     """Return PIDs of OTHER python processes running `spirit.main`.
+
+    Two-stage detection:
+      1. `pgrep -f` matches any process with `spirit.main` in its argv.
+      2. Each match is verified by reading `/proc/<pid>/cmdline` and
+         checking argv[0] is a real Python interpreter (or the
+         installed `spirit` entrypoint) — NOT a shell/tmux wrapper
+         that just happens to mention `spirit.main` in its argv.
+
+    Stage 2 fixes the false-positive that fires whenever Spirit is
+    launched via `bash -c "... spirit.main ..."` or
+    `tmux new-session "... spirit.main ..."` — i.e. the documented
+    runbook pattern for systemd-less deployments.
 
     Excludes the current PID. Returns [] if `pgrep` is unavailable
     or finds nothing.
@@ -43,12 +104,11 @@ def detect_other_spirit_processes() -> list[int]:
         return []
     my_pid = os.getpid()
     try:
-        # Match any python invocation of `spirit.main` (module form),
-        # not just the canonical entrypoint script — covers the dev
-        # `python3 -m spirit.main` path AND the installed `spirit`
-        # entrypoint (which Python expands to spirit.main:main).
+        # Cast the net wide on pgrep — any process whose argv mentions
+        # spirit.main is a candidate. Stage 2 below filters out the
+        # shell wrappers that this matches incidentally.
         result = subprocess.run(
-            ["pgrep", "-f", r"python.*\bspirit\.main\b"],
+            ["pgrep", "-f", r"\bspirit\.main\b"],
             capture_output=True, text=True, timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -64,8 +124,15 @@ def detect_other_spirit_processes() -> list[int]:
             pid = int(line)
         except ValueError:
             continue
-        if pid != my_pid:
-            pids.append(pid)
+        if pid == my_pid:
+            continue
+        # Stage 2: verify this is a real Spirit Python process by
+        # reading argv[0], not a shell/tmux wrapper that happens to
+        # mention spirit.main in its argv.
+        argv = _read_pid_cmdline_argv(pid)
+        if not _argv_looks_like_spirit(argv):
+            continue
+        pids.append(pid)
     return pids
 
 
