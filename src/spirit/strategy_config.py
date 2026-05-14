@@ -65,6 +65,15 @@ _STRATEGY_REGISTRY = {
         "module": "spirit.strategies.examples.sma_crossover",
         "class": "SmaCrossoverStrategy",
     },
+    # Second bundled Free-tier example. Exercises the full BaseStrategy
+    # lifecycle (monitoring_intervals, on_entry_confirmed,
+    # on_monitoring_tick, on_exit_completed). Computes its own MACD/RSI/
+    # SMA/ATR in pandas; no spirit.indicators.* dependency.
+    "macd_demo": {
+        "aliases": {"macd_demo_example"},
+        "module": "spirit.strategies.examples.macd_demo",
+        "class": "MacdDemoStrategy",
+    },
 }
 
 # Build reverse lookup: alias → canonical name
