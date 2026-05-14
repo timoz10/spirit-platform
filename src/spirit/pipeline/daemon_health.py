@@ -35,7 +35,7 @@ def record_heartbeat(
         metadata: Optional JSON-serializable dict (zones_count, last_candle, etc.)
         run_id: Only 'live' writes to the table — test/validate/replay are skipped
                 to prevent dev runs from overwriting production heartbeats.
-        instance: Spirit instance name (e.g. 'prod', 'davy'). Part of the
+        instance: Spirit instance name (e.g. 'prod', 'alice'). Part of the
                   composite PK so different instances can't overwrite each other.
 
     Returns:
@@ -44,8 +44,8 @@ def record_heartbeat(
     if run_id != 'live':
         return True  # silently skip — dev/test must not touch prod heartbeats
 
-    # Default to SPIRIT_INSTANCE from env/config so daemons on Davy's server
-    # don't silently overwrite prod heartbeats when instance is not passed.
+    # Default to SPIRIT_INSTANCE from env/config so daemons on a developer's
+    # box don't silently overwrite prod heartbeats when instance is not passed.
     if instance is None:
         instance = os.environ.get('SPIRIT_INSTANCE')
         if instance is None:

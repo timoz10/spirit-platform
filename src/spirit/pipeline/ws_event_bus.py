@@ -113,8 +113,8 @@ def derive_ws_url(api_url: str) -> str:
     """Convert an http(s) API base URL into the ws(s) /events URL.
 
     The gateway exposes ``/v1/events``; SPIRIT_API_URL already points at the
-    ``/v1`` base (e.g. ``http://10.0.0.4:8000/v1``), so we just swap scheme
-    and append ``/events``.
+    ``/v1`` base (e.g. ``https://api.tradebot.live/v1``), so we just swap
+    scheme and append ``/events``.
     """
     parsed = urlparse(api_url.rstrip("/"))
     scheme_map = {"http": "ws", "https": "wss"}
