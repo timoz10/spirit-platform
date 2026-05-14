@@ -14,7 +14,7 @@ python3 -m spirit.setup     # interactive setup wizard
 python3 -m spirit.main --mode paper
 ```
 
-Run the wizard once (it asks your tier, instance name, and Kraken API keys), drop a strategy file in `~/.spirit/strategies/` (or use the bundled `sma_crossover` example), and Spirit starts paper-trading.
+Run the wizard once (it asks your tier, instance name, and Kraken API keys), pick one of the bundled examples (`sma_crossover` or `macd_demo`) or drop your own file in `~/.spirit/strategies/`, and Spirit starts paper-trading.
 
 To go live, swap `--mode paper` for `--mode live` once you've sanity-checked the paper P&L.
 
@@ -35,18 +35,29 @@ Get a key at [portal.tradebot.live](https://portal.tradebot.live).
 
 ## Writing a strategy
 
-Strategies are plain Python classes with three methods:
+Strategies subclass `BaseStrategy` and implement `evaluate_trade()`. Everything else is optional — opt into lifecycle hooks as you need them.
 
 ```python
-class MyStrategy(SpiritStrategy):
-    def evaluate_trade(self, ctx): ...
-    def on_entry_confirmed(self, fill): ...
-    def on_monitoring_tick(self, ctx): ...
+from spirit.strategies.base import BaseStrategy
+
+class MyStrategy(BaseStrategy):
+    def evaluate_trade(self, pair: str, mode: str = "test", **kwargs):
+        # Return {"entry": bool, "exit": bool, "details": {...}}
+        return {"entry": False, "exit": False, "details": {}}
 ```
 
-Drop the file in `~/.spirit/strategies/` and Spirit picks it up at next startup. The bundled `sma_crossover` example is the simplest possible reference; it's runnable as-is.
+Optional hooks the orchestrator will call when configured:
+`on_monitoring_tick`, `on_entry_confirmed`, `on_exit_completed`,
+`validate_readiness`, `get_data_requirements`. Properties for tier-aware
+behaviour: `uses_risk_gate`, `required_capabilities`. See the bundled
+examples — both files are heavily commented teaching artifacts:
 
-For the full plugin guide and an LLM-ready companion (point Cursor or Claude at it and it can write a strategy from spec), see `docs/reference/platform/`.
+- **[`src/spirit/strategies/examples/sma_crossover.py`](src/spirit/strategies/examples/sma_crossover.py)** — minimum viable. Subclass + `evaluate_trade`, nothing else. Read this first.
+- **[`src/spirit/strategies/examples/macd_demo.py`](src/spirit/strategies/examples/macd_demo.py)** — full lifecycle tour. Multi-interval, monitoring-tick ATR stop, entry-confirmed state-stash, paper-by-default guard. Read this to see every hook in action.
+
+Drop your own under `~/.spirit/strategies/` and Spirit picks it up at next startup.
+
+For the conceptual walkthrough, see the blog post [*Anatomy of a Spirit Strategy*](https://www.tradebot.live/) which walks `macd_demo.py` top-to-bottom.
 
 ---
 
@@ -63,8 +74,9 @@ src/spirit/
   pipeline/                - WebSocket event bus, freshness cache, daemon health
   storage/                 - local SQLite schema (Free tier)
   strategies/
-    base.py                - SpiritStrategy ABC
-    examples/sma_crossover - reference strategy
+    base.py                - BaseStrategy abstract base class
+    examples/sma_crossover - minimal reference strategy
+    examples/macd_demo     - full-lifecycle reference strategy
   utils/                   - data providers, OHLC buffer, paper executor, etc.
 ```
 
@@ -81,7 +93,7 @@ Spirit ships with a Kraken adapter. To target a different exchange, implement th
 ## Status
 
 - **v2.2.1** — first public release. Free + Plus tiers, single-machine deploy, paper or live mode.
-- Production canary on Hetzner runs the same code, paper-mode, 24/7 — sees the same data and runs the same strategies you do.
+- Production canary on Hetzner runs the same framework code, paper-mode, 24/7 — same orchestrator, same data providers, same lifecycle hooks. Strategy differs (canary runs a private IP strategy), but the platform you install is the same platform we run.
 
 ---
 
