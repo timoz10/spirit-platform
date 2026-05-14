@@ -170,6 +170,44 @@ def _remove_yaml_keys(yaml_path: str, keys: Sequence[str]) -> None:
         f.writelines(kept)
 
 
+def _load_existing_yaml(yaml_path: str) -> dict:
+    """Return current values from an existing spirit.yaml as a dict.
+
+    Used by the wizard to pre-populate prompts on a re-run — without
+    this, every prompt's default reverts to the hardcoded value, and
+    a user who hits Enter expecting to keep their previous choice
+    silently overwrites it. Trap caught in 2026-05-14 VM testing
+    when a user re-ran the wizard 3x and saw their instance name
+    flip from `test-vm` back to `local`.
+
+    Line-based parser (no yaml dependency) to match `_write_yaml`'s
+    style and to tolerate user-added comments. Returns {} if the file
+    doesn't exist (first-run).
+    """
+    if not os.path.exists(yaml_path):
+        return {}
+    values: dict = {}
+    try:
+        with open(yaml_path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if ":" not in stripped:
+                    continue
+                key, _, val = stripped.partition(":")
+                key = key.strip()
+                val = val.strip()
+                # Strip surrounding double or single quotes — the writer
+                # adds them for values with commas (e.g. SPIRIT_PAIRS).
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                    val = val[1:-1]
+                values[key] = val
+    except OSError:
+        return {}
+    return values
+
+
 def _write_yaml(yaml_path: str, values: dict):
     """Write spirit.yaml config file."""
     lines = []
@@ -216,8 +254,21 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
     env_values: dict = {}
     yaml_values: dict = {"SPIRIT_TIER": "free"}
 
+    # Load existing yaml so re-runs offer the user's previous answers
+    # as defaults. Without this, every prompt reverts to the hardcoded
+    # default, and a user who hits Enter expecting to keep their last
+    # choice silently overwrites it. See #700 for the migration UX
+    # followup; this is the minimum-viable fix.
+    existing = _load_existing_yaml(yaml_path)
+    is_rerun = bool(existing)
+
     print()
     print("--- Free tier ---")
+    if is_rerun:
+        print(f"  Re-run detected — values from {os.path.basename(yaml_path)}")
+        print("  are offered as the default at each prompt. Hit Enter to keep,")
+        print("  or type a new value to change.")
+        print()
     print("Free-tier Spirit runs entirely on your machine:")
     print("  - Reads OHLC directly from the exchange (Kraken at launch)")
     print("  - Stores trade outcomes + state in a local SQLite file")
@@ -229,12 +280,22 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
     print()
 
     # --- Instance name + SQLite path ---
-    instance = _ask_text("Instance name (e.g. local, alpha)", "local")
+    instance = _ask_text(
+        "Instance name (e.g. local, alpha)",
+        existing.get("SPIRIT_INSTANCE", "local"),
+    )
     yaml_values["SPIRIT_INSTANCE"] = instance
 
-    default_db = os.path.expanduser(f"~/.spirit/{instance}/spirit.db")
+    # Default DB path follows the instance name unless the user previously
+    # set an explicit SPIRIT_SQLITE_PATH override.
+    default_db = existing.get("SPIRIT_SQLITE_PATH") or os.path.expanduser(
+        f"~/.spirit/{instance}/spirit.db"
+    )
     sqlite_path = _ask_text("SQLite database path", default_db)
-    if sqlite_path != default_db:
+    # Compare against the *instance-derived* default — explicit overrides
+    # land in SPIRIT_SQLITE_PATH, instance-derived defaults don't.
+    instance_default = os.path.expanduser(f"~/.spirit/{instance}/spirit.db")
+    if sqlite_path != instance_default:
         yaml_values["SPIRIT_SQLITE_PATH"] = sqlite_path
 
     # --- Optional TradeBOT API key (warm-on-ramp to paid) ---
@@ -256,7 +317,7 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
         choices=[
             ("kraken", "Kraken — bundled, only option at v2.2.x"),
         ],
-        default_value="kraken",
+        default_value=existing.get("SPIRIT_EXCHANGE", "kraken"),
     )
     yaml_values["SPIRIT_EXCHANGE"] = exchange
 
@@ -276,11 +337,24 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
     print()
     print("Trading pairs — which markets should Spirit watch?")
     print("  Bundled: XBTUSD, ETHUSD, SOLUSD, ATOMUSD")
-    pairs_in = _ask_text("Pairs (comma-separated)", "XBTUSD,ETHUSD")
+    pairs_in = _ask_text(
+        "Pairs (comma-separated)",
+        existing.get("SPIRIT_PAIRS", "XBTUSD,ETHUSD"),
+    )
     yaml_values["SPIRIT_PAIRS"] = f'"{pairs_in}"'
 
     # --- Strategy ---
     print()
+    # Map existing yaml value to a menu choice. Custom strategies (anything
+    # not in the built-in set) land on "custom" — the prompt will then ask
+    # for the module name, defaulting to the existing value.
+    prior_strategy = existing.get("SPIRIT_STRATEGY", "sma_crossover")
+    if prior_strategy in ("sma_crossover", "macd_demo"):
+        strategy_default = prior_strategy
+    elif prior_strategy:
+        strategy_default = "custom"
+    else:
+        strategy_default = "sma_crossover"
     strat_choice = _ask_select(
         "Strategy",
         choices=[
@@ -291,10 +365,16 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
             ("custom",
              "Custom — drop your own under ~/.spirit/strategies/"),
         ],
-        default_value="sma_crossover",
+        default_value=strategy_default,
     )
     if strat_choice == "custom":
-        strat_name = _ask_text("Strategy module name (without .py)")
+        # If the prior yaml had a custom name (anything not in the built-in
+        # set), offer it as the default so re-runs don't lose the value.
+        custom_default = prior_strategy if prior_strategy not in (
+            "sma_crossover", "macd_demo", ""
+        ) else ""
+        strat_name = _ask_text("Strategy module name (without .py)",
+                               custom_default)
         # Strip a trailing `.py` if the user typed one — strategy_config
         # matches by module name, not filename. Also strip any path
         # components ("strategies/foo.py" → "foo").
@@ -472,8 +552,16 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
     env_values: dict = {}
     yaml_values: dict = {}
 
+    existing = _load_existing_yaml(yaml_path)
+    is_rerun = bool(existing)
+
     print()
     print("--- Plus / Pro tier ---")
+    if is_rerun:
+        print(f"  Re-run detected — values from {os.path.basename(yaml_path)}")
+        print("  are offered as the default at each prompt. Hit Enter to keep,")
+        print("  or type a new value to change.")
+        print()
     print("Spirit connects to api.tradebot.live for D-Limit zones,")
     print("scorer outputs, and risk-gate calibration. You need a key.")
     print()
@@ -481,16 +569,22 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
     api_key = _ask_password("Spirit API key")
 
     print()
+    prior_api_url = existing.get("SPIRIT_API_URL", "")
+    if prior_api_url == "https://api.tradebot.live/v1" or not prior_api_url:
+        api_url_default = "https://api.tradebot.live/v1"
+    else:
+        api_url_default = "custom"
     api_url_choice = _ask_select(
         "API gateway URL",
         choices=[
             ("https://api.tradebot.live/v1", "api.tradebot.live (default)"),
             ("custom", "Custom URL"),
         ],
-        default_value="https://api.tradebot.live/v1",
+        default_value=api_url_default,
     )
     if api_url_choice == "custom":
-        api_url = _ask_text("Custom gateway URL")
+        api_url = _ask_text("Custom gateway URL",
+                            prior_api_url if api_url_default == "custom" else "")
     else:
         api_url = api_url_choice
 
@@ -518,7 +612,10 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
             print(f"  Could not reach gateway: {e}")
 
     if not instance:
-        instance = _ask_text("Instance name (e.g. prod, canary, davy)", "prod")
+        instance = _ask_text(
+            "Instance name (e.g. prod, canary, davy)",
+            existing.get("SPIRIT_INSTANCE", "prod"),
+        )
 
     yaml_values["SPIRIT_API_URL"] = api_url
     yaml_values["SPIRIT_INSTANCE"] = instance
@@ -532,7 +629,7 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
             ("kraken", "Kraken"),
             ("none", "None — paper mode only, no exchange keys needed"),
         ],
-        default_value="kraken",
+        default_value=existing.get("SPIRIT_EXCHANGE", "kraken"),
     )
 
     if exchange == "kraken":
@@ -553,7 +650,10 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
     print("Trading pairs — which markets should Spirit watch?")
     print("  Available: XBTUSD, ETHUSD, SOLUSD, ATOMUSD, INJUSD, FETUSD, JUPUSD")
     print("  Suggested: XBTUSD,ETHUSD,SOLUSD  (3 pairs is a sensible start)")
-    pairs_in = _ask_text("Pairs (comma-separated)", "XBTUSD,ETHUSD,SOLUSD")
+    pairs_in = _ask_text(
+        "Pairs (comma-separated)",
+        existing.get("SPIRIT_PAIRS", "XBTUSD,ETHUSD,SOLUSD"),
+    )
     yaml_values["SPIRIT_PAIRS"] = f'"{pairs_in}"'
 
     yaml_values["SPIRIT_STRATEGY"] = "zone_bounce"
