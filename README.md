@@ -9,7 +9,7 @@ The framework is open source under Apache-2.0. Spirit handles the orchestration 
 ## Quick start
 
 ```bash
-pip install spirit-trading
+pip install spirit-platform
 python3 -m spirit.setup     # interactive setup wizard
 python3 -m spirit.main --mode paper
 ```
