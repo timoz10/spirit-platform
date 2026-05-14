@@ -613,7 +613,7 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
 
     if not instance:
         instance = _ask_text(
-            "Instance name (e.g. prod, canary, davy)",
+            "Instance name (e.g. prod, canary, alice)",
             existing.get("SPIRIT_INSTANCE", "prod"),
         )
 

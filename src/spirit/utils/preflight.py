@@ -94,7 +94,7 @@ def _check_api_gateway_connectivity() -> CheckResult:
 
     base_url = get_config("SPIRIT_API_URL", "")
     if not base_url:
-        base_url = os.environ.get("SPIRIT_API_URL", "http://10.0.0.4:8000/v1")
+        base_url = os.environ.get("SPIRIT_API_URL", "https://api.tradebot.live/v1")
     health_url = base_url.rstrip("/") + "/health"
 
     try:
