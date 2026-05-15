@@ -1,6 +1,6 @@
 ---
-status: v1 (#484 Part B)
-target: v2.2.0
+status: v1
+target: v2.2.0+
 audience: someone writing their first Spirit strategy
 ---
 
@@ -14,66 +14,23 @@ If you're reading this for the second time and just want a code skeleton, jump t
 
 ## 1. The 30-second mental model
 
-Spirit is an event-driven trading framework. Once a candle interval (default 60m) ticks over, the orchestrator calls **your strategy's `evaluate_trade(pair, mode)` method**. You return a dict saying "enter," "exit," or "do nothing." Spirit handles everything else — order placement, exit monitoring, paper-equity bookkeeping, audit logging.
+Spirit is event-driven. Once a candle closes (default 60m), the orchestrator calls **your strategy's `evaluate_trade(pair, mode)`**. You return `{"entry", "exit", "details"}`. Spirit handles order placement, exit monitoring, paper-equity bookkeeping, and audit logging.
 
 ```
-Market data ──► OHLC ──► D-Limit indicators ──► your strategy ──► entry/exit signal
-                                                      │
-                                       (optional) RiskGate sizes it
-                                                      │
-                                                  Order executor
-                                                      │
-                                                exit monitoring (1m ticks)
+OHLC ─► (D-Limit indicators) ─► your strategy ─► entry/exit signal ─► (RiskGate) ─► order
 ```
 
-Three things you need to know:
+Three things to know:
 
-- **You implement `BaseStrategy`**, a small abstract base class. One required method (`evaluate_trade`), several optional hooks.
-- **Your strategy file lives in `~/.spirit/strategies/`** — Spirit loads it at startup. No PR, no merge, no rebuild.
-- **Your strategy never talks to PostgreSQL directly.** All data flows through the gateway HTTP+WS API at `https://api.tradebot.live`.
+- **You subclass `BaseStrategy`.** One required method, several optional hooks.
+- **Your file lives in `~/.spirit/strategies/`.** Spirit loads it at startup — no PR, no rebuild.
+- **You never talk to PostgreSQL.** All data flows through the gateway at `https://api.tradebot.live`.
 
 ---
 
 ## 2. Your first strategy
 
-The minimum-viable strategy that confirms loading works:
-
-```python
-# ~/.spirit/strategies/my_first_algo.py
-
-from spirit.strategies.base import BaseStrategy, DataRequirements
-
-
-class MyFirstAlgo(BaseStrategy):
-    """The simplest strategy that does nothing — confirms loading works."""
-
-    def evaluate_trade(self, pair: str, mode: str = "test", **kwargs):
-        return {"entry": False, "exit": False, "details": {}}
-
-    def get_data_requirements(self) -> DataRequirements:
-        return DataRequirements(
-            pairs=["XBTUSD"],
-            signal_interval=60,
-        )
-```
-
-In your `.env`:
-
-```bash
-SPIRIT_STRATEGY=my_first_algo
-SPIRIT_STRATEGIES_DIR=~/.spirit/strategies   # optional; this is the default
-```
-
-Restart Spirit. You'll see:
-
-```
-[INFO] strategy_config: User strategy 'my_first_algo' resolved to MyFirstAlgo in ~/.spirit/strategies/my_first_algo.py
-[INFO] strategy_config: Strategy loaded: my_first_algo (MyFirstAlgo)
-```
-
-That's the contract. Everything else is *what* your strategy does inside `evaluate_trade()`.
-
-### A real strategy using gateway data
+A complete worked example — buys when the 1h candle closes a configurable % below the 24h high:
 
 ```python
 # ~/.spirit/strategies/buy_the_dip.py
@@ -92,16 +49,10 @@ class BuyTheDip(BaseStrategy):
         self.filter_interval = 60
 
     def get_data_requirements(self) -> DataRequirements:
-        return DataRequirements(
-            pairs=["XBTUSD"],
-            signal_interval=60,
-            warmup_candles=24,
-        )
+        return DataRequirements(pairs=["XBTUSD"], signal_interval=60, warmup_candles=24)
 
     def evaluate_trade(self, pair: str, mode: str = "test", **kwargs):
-        dp = get_data_provider()
-        candles = dp.get_ohlc(pair=pair, interval=60, limit=24, order="desc")
-
+        candles = get_data_provider().get_ohlc(pair=pair, interval=60, limit=24, order="desc")
         if len(candles) < 24:
             return {"entry": False, "exit": False, "details": {}}
 
@@ -121,86 +72,37 @@ class BuyTheDip(BaseStrategy):
         }
 ```
 
-Configure with optional params:
+Configure in your `.env`:
 
 ```bash
 SPIRIT_STRATEGY=buy_the_dip
 SPIRIT_STRATEGY_PARAMS='{"dip_pct": 3.0}'
 ```
 
+Restart Spirit. You'll see `Strategy loaded: buy_the_dip (BuyTheDip)` in the log — that's it. Everything else is what your strategy does inside `evaluate_trade()`.
+
 ---
 
 ## 3. The `BaseStrategy` contract
 
-Path: `src/spirit/strategies/base.py` — read it; it's 135 lines and clear.
+Source: `src/spirit/strategies/base.py` (~135 lines, clear). For verbatim signatures, return-shape details, and the full lifecycle-hook table see [`STRATEGY_LLM_CONTEXT.md`](STRATEGY_LLM_CONTEXT.md) §2–§3. Conceptually:
 
-### Required
+- **One required method**: `evaluate_trade(pair, mode, **kwargs)` — called once per signal-interval close, returns `{"entry": bool, "exit": bool, "details": dict}`. `details` needs at minimum `datetime`, `entry_price`, `symbol`; extra fields persist into `entry_context` on the trade row.
+- **Optional hooks** for what happens around the entry decision: `get_data_requirements()` (warmup + interval declaration), `on_monitoring_tick()` (1m exit checks while a trade is open), `on_entry_scan_tick()` (early entries between signal intervals), `on_pipeline_event()` (refresh caches when upstream stages complete), `on_entry_confirmed()`/`on_exit_completed()` (lifecycle callbacks), `validate_readiness()` (post-warmup sanity check).
+- **`uses_risk_gate = True`** opts into RiskGate sizing (see §7). Default `False`, your strategy owns sizing.
 
-| Method | What it does |
-|--------|--------------|
-| `evaluate_trade(pair, mode, **kwargs)` | Called once per signal-interval close. Returns `{"entry", "exit", "details"}` |
-
-The `details` dict needs at minimum `datetime`, `entry_price`, `symbol`. Add whatever else your strategy wants for downstream context — those extra fields end up in `entry_context` on the persisted trade row, queryable later.
-
-### Return shape
-
-```python
-{
-    "entry": bool,        # True to open a position
-    "exit": bool,         # True to close existing position
-    "details": {
-        "datetime": ...,            # candle timestamp
-        "entry_price": float,       # required if entry=True
-        "symbol": str,              # the pair
-        # ... any strategy-specific fields you want logged
-    },
-}
-```
-
-### Optional lifecycle hooks
-
-| Hook | When |
-|------|------|
-| `get_data_requirements()` | At startup. Tells Spirit which pairs/intervals/warmup you need |
-| `on_monitoring_tick(pair, interval, candle, open_trade)` | Each monitoring-interval tick (e.g. 1m) **while a trade is open** — return an exit dict to close |
-| `on_entry_scan_tick(pair, interval, candle)` | Each monitoring-interval tick **with no open trade** — return an entry dict to open early |
-| `on_pipeline_event(event)` | When upstream pipeline stages complete (e.g. D-Limit writes a new indicator row). Use this to refresh in-memory caches |
-| `on_entry_confirmed(pair, signal, risk_decision)` | After RiskGate approves your entry — capture context for exit logic |
-| `on_exit_completed(pair, exit_reason, ...)` | After the exit fires — update cooldowns, clear state |
-| `validate_readiness()` | After warmup — return `(ready: bool, issues: list[str])` for the GREEN/YELLOW LIGHT log |
-
-The defaults are no-ops, so override only what you need.
-
-### `uses_risk_gate` property
-
-Set this to `True` to opt into RiskGate sizing (see §7). Default is `False` — your strategy fully owns position sizing.
-
-```python
-class MyStrategy(BaseStrategy):
-    uses_risk_gate = True
-```
+Override only what you need — the defaults are no-ops.
 
 ---
 
 ## 4. Pair routing — one strategy instance per pair
 
-Spirit instantiates **one strategy object per pair** at startup. Each pair runs in its own thread; per-pair locks serialise eval + monitoring + on_pipeline_event so they don't interleave.
+Spirit creates **one strategy object per pair** at startup. Each pair runs in its own thread; per-pair locks serialise eval + monitoring + on_pipeline_event so they never interleave for the same pair.
 
 What this means for you:
 - Use `self.filter_pair` to know which pair this instance owns.
-- Don't share mutable state across pair instances unless it's intentional and locked.
-- Inside `evaluate_trade`, `pair` is always your pair — but if you call `get_spirit_temp_ti()` (legacy helper), set the active pair first via `set_active_pair(pair)`.
-
-```python
-from spirit.utils.db_utils import set_active_pair, get_spirit_temp_ti
-
-def evaluate_trade(self, pair, mode="test", **kwargs):
-    set_active_pair(pair)
-    df = get_spirit_temp_ti()    # routes to this thread's pair
-    ...
-```
-
-Most modern strategies skip this and call `get_data_provider()` directly with explicit pair args — cleaner and thread-safe by construction.
+- Call `get_data_provider()` with explicit pair args — thread-safe by construction.
+- Don't share mutable state across pair instances without an explicit `threading.Lock`.
 
 ---
 
@@ -241,17 +143,17 @@ If you call an endpoint your tier doesn't unlock, you get a `403`. Plan your dat
 
 ### Free-tier specifics
 
-On Free, `get_data_provider()` returns a `CompositeDataProvider` that splits the work:
+On Free, `get_data_provider()` returns a `CompositeDataProvider`:
 
-- **Reads** (`get_ohlc`, `get_pairs`) come from an `ExchangeBackedDataProvider` that wraps your configured `ExchangeProvider` (Kraken at v2.3.0). No gateway calls, no API key. Bulk historical backfills are limited to ~720 candles per request — enough for live evaluation, not for deep backtesting.
-- **Writes** (`put_state`, `write_performance`, `write_heartbeat`) go to a local SQLite file at `~/.spirit/<instance>/spirit.db` (override with `SPIRIT_SQLITE_PATH`).
-- **IP methods** (`get_zones`, `get_dlimit`, `get_*_calibration`, …) raise `NotImplementedError` with an upgrade message. There is no silent fallback — if your strategy calls an IP method on Free it will crash, by design.
+- **Reads** come from your configured `ExchangeProvider` (Kraken by default) — no gateway calls, no API key. Bulk backfills cap at ~720 candles per request.
+- **Writes** go to local SQLite at `~/.spirit/<instance>/spirit.db` (override with `SPIRIT_SQLITE_PATH`).
+- **IP methods** (`get_zones`, `get_dlimit`, `get_*_calibration`, …) raise `NotImplementedError` with an upgrade message. No silent fallback.
 
-A working starting point is `src/spirit/strategies/examples/sma_crossover.py` — paper-mode-by-default, ~120 lines, uses only `FrameworkDataProvider`. Copy it, adapt it, and drop your version in `~/.spirit/strategies/` (see §6).
+A working starting point: `src/spirit/strategies/examples/sma_crossover.py` (~120 lines, Framework-only).
 
 ### Reading from event payloads (no fetch race)
 
-When a D-Limit row finishes computing, the gateway pushes a WS event with the canonical row attached. Spirit's `on_pipeline_event(event)` hook gives it to you — read `event.row` directly instead of issuing a fresh fetch:
+When a D-Limit row finishes computing, the gateway pushes a WS event with the canonical row attached. Read `event.row` directly in `on_pipeline_event` — don't issue a fresh fetch, you'll race against commit visibility.
 
 ```python
 def on_pipeline_event(self, event):
@@ -259,8 +161,6 @@ def on_pipeline_event(self, event):
         # event.row has slope_angle, capture_rate, trend_state, ...
         self._update_my_cache(event.candle_dt, event.row)
 ```
-
-Why this matters: until 2026-04-29 strategies did a separate PG fetch after the event arrived, racing against commit visibility. Push-through-event eliminates the race. The short version is *don't fetch what's already in `event.row`*.
 
 ---
 
@@ -300,88 +200,57 @@ Spirit reads three env vars (typically from `.env` or `config/spirit.yaml`):
 |-----|---------|
 | `SPIRIT_STRATEGY` | Name (filename without `.py`, or alias for a built-in) |
 | `SPIRIT_STRATEGY_PARAMS` | JSON dict, passed as kwargs to your `__init__` |
-| `SPIRIT_INSTANCE` | Your instance label (e.g. `davy`, `customer-47`) |
+| `SPIRIT_INSTANCE` | Your instance label (e.g. `test`, `customer-47`) |
 
 ```bash
 SPIRIT_STRATEGY=buy_the_dip
 SPIRIT_STRATEGY_PARAMS='{"dip_pct": 3.0, "max_position_usd": 500}'
-SPIRIT_INSTANCE=davy
+SPIRIT_INSTANCE=test
 ```
 
 The loader silently drops kwargs your `__init__` doesn't accept, so older params can stay in JSON during refactors.
 
-### End-to-end onboarding example
+### End-to-end onboarding
 
 ```bash
-# 1. Spirit is installed at /opt/spirit/kraken-bot/. Your personal strategies
-#    live elsewhere — they don't touch the install tree.
 mkdir -p ~/.spirit/strategies
-
-# 2. Drop your strategy file
 cp my_strategy.py ~/.spirit/strategies/
-
-# 3. Configure
 echo "SPIRIT_STRATEGY=my_strategy" >> /opt/spirit/kraken-bot/.env
-
-# 4. Restart Spirit
 sudo systemctl restart spirit.service
-
-# 5. Verify
 sudo journalctl -u spirit.service --since "1 min ago" | grep "Strategy loaded"
 # → Strategy loaded: my_strategy (MyStrategy)
 ```
 
-To iterate: edit your file, restart the service. No git operations involved.
-
-### Built-ins for reference
-
-The `_STRATEGY_REGISTRY` dict in `strategy_config.py` lists in-tree strategies. **These are not templates you should fork into the user dir** unless you understand them — they're shipped for our internal use and future versions may break user copies. The skeleton in §8 is a safer starting point.
+Iterate by editing the file and restarting the service. No git involved.
 
 ---
 
 ## 7. RiskGate — opt-in position sizing
 
-RiskGate is a sizing helper that ships with Spirit. Lives at `src/spirit/indicators/decision_engine/engine/risk_gate.py`. It takes a signal, profiles its R:R, applies regime-adaptive floors, and returns a sized position.
-
-You don't call RiskGate from your strategy — the orchestrator does. To opt in, set:
+RiskGate (`src/spirit/indicators/decision_engine/engine/risk_gate.py`) profiles a signal's R:R, applies regime-adaptive floors, and returns a sized position. The orchestrator calls it, not you. To opt in:
 
 ```python
 class MyStrategy(BaseStrategy):
     uses_risk_gate = True
 ```
 
-When `True`, after your `evaluate_trade` returns `entry=True`, the orchestrator:
+When `True`, after `evaluate_trade` returns `entry=True`, the orchestrator pulls `signal = details["signal"]`, calls `risk_gate.evaluate(signal)`, and either drops the entry (logged with reason) or sizes it via `risk_decision.position_size_usd`.
 
-1. Pulls a `signal` object out of `details["signal"]`
-2. Calls `risk_gate.evaluate(signal)` → `RiskDecision`
-3. If `risk_decision.trade is False`, the entry is dropped (logged with skip reason)
-4. If `True`, sets `trade_record.buy_amount = risk_decision.position_size_usd` and proceeds
+`details["signal"]` should expose: `confidence_score` (0-100), `suggested_stop`, `suggested_target`, `regime`, `slope_angle`, `capture_rate`, `pair`, `datetime`, `price`.
 
-For RiskGate to make a sensible decision, your `details["signal"]` should expose:
-
-- `confidence_score` — 0-100, your model's score for this entry
-- `suggested_stop` — stop price
-- `suggested_target` — take-profit price
-- `regime`, `slope_angle`, `capture_rate` — D-Limit context (or whatever regime label your strategy uses)
-- `pair`, `datetime`, `price`
-
-If you set `uses_risk_gate = False` (the default), the orchestrator skips RiskGate entirely. You're then responsible for setting `trade_record.buy_amount` to a sane size before returning.
-
-**Configuration** (`config/spirit.yaml`, all optional):
+With `uses_risk_gate = False` (default) the orchestrator skips RiskGate; you own sizing — set `trade_record.buy_amount` yourself or rely on `TRADE_USD_AMOUNT` from `config/spirit.yaml`.
 
 ```yaml
-RISK_GATE_CALIBRATION_ENABLED: true        # regime-adaptive R:R floors
+RISK_GATE_CALIBRATION_ENABLED: true     # regime-adaptive R:R floors
 RISK_GATE_RECALIBRATE_HOURS: 24
-TRADE_USD_AMOUNT: 100                      # base size when calibrator is off
+TRADE_USD_AMOUNT: 100                   # base size when calibrator is off
 ```
-
-Tune to your risk appetite. A future setup guide will go deeper into RiskGate calibration.
 
 ---
 
-## 8. A copy-paste skeleton (longer than §2)
+## 8. A copy-paste skeleton
 
-This shows the most-common shape including monitoring exit, on_entry_confirmed context capture, and on_pipeline_event cache refresh.
+The production shape: signal eval + 1m exit monitoring + on_pipeline_event cache refresh.
 
 ```python
 """
@@ -477,7 +346,7 @@ class MyStrategy(BaseStrategy):
         return 0.0
 ```
 
-In a future Spirit release we'll publish this as a pullable template module — same way `Kraken` is the reference exchange and `zone_bounce` is the reference strategy. For now, copy the block above.
+Copy the block above, rename, modify.
 
 ---
 
@@ -487,29 +356,25 @@ We don't gate this. You own your risk appetite. But here's the order of operatio
 
 ### 1. Smoke-test in isolation
 
-Before pointing your live Spirit at the file, confirm it imports and runs:
+Before restarting Spirit, confirm your file imports and runs:
 
 ```bash
 python3 -c "
-import sys
-sys.path.insert(0, '/home/you/.spirit/strategies')
+import sys; sys.path.insert(0, '/home/you/.spirit/strategies')
 from my_strategy import MyStrategy
-
 s = MyStrategy()
 print(s.get_data_requirements())
 print(s.evaluate_trade('XBTUSD', mode='test'))
 "
 ```
 
-Catches typos, missing imports, and obvious type errors before you waste a Spirit restart.
+Catches typos, missing imports, and obvious type errors before you waste a restart.
 
 ### 2. Local backtest (cheap, lossy)
 
-Backtest on historical data via `CsvDataProvider` or replay mode (`docs/reference/BACKFILL_GUIDE.md`). Confirms your strategy runs end-to-end, doesn't crash on edge cases, and produces signals.
+Backtest on historical data via `CsvDataProvider` or replay mode. Confirms end-to-end correctness, edge-case handling, and that your signal actually trips.
 
-**A backtest is NOT a performance estimate.** Slippage, fee structure, and microstructure effects diverge enough that a profitable backtest can lose live money. Use backtests for *correctness*, not *expected returns*.
-
-See [§Backtesting before #500 lands](#backtesting-before-500-lands) below for the temporary writes pattern.
+**A backtest is NOT a performance estimate.** Slippage, fees, and microstructure diverge enough that a profitable backtest can lose live money. Use backtests for *correctness*, not *expected returns*. See §Backtesting below for the writes pattern.
 
 ### 3. Paper soak (the real validation)
 
@@ -533,10 +398,10 @@ These are real failures from the project's history. Worth a re-read before going
 
 | Pitfall | Fix |
 |---------|-----|
-| **Static market thresholds** (e.g. "ATR > 0.5") | Derive from data — percentiles, neighbours, historical regime distributions. See CLAUDE.md Rule 9. |
-| **Fetch-after-event race** — your strategy fires a fetch in `on_pipeline_event` to get the just-written indicator row | Use `event.row` directly; the gateway pushed it through the event. CLAUDE.md Rule 6 |
-| **Look-ahead bias** in backtests — accumulated values like zone strength queried as "current" instead of "as of this candle" | Reconstruct point-in-time using event/touch history. See `docs/reference/TESTING_STANDARDS.md` |
-| **Type/timezone divergence** — `Decimal` vs `float`, naive vs tz-aware datetime | Rule 11 in CLAUDE.md. Always normalise at the boundary. |
+| **Static market thresholds** (e.g. "ATR > 0.5") | Derive from data — percentiles, neighbours, historical regime distributions. |
+| **Fetch-after-event race** — your strategy fires a fetch in `on_pipeline_event` to get the just-written indicator row | Use `event.row` directly; the gateway already pushed it through the event. |
+| **Look-ahead bias** in backtests — accumulated values like zone strength queried as "current" instead of "as of this candle" | Reconstruct point-in-time using event/touch history; never query the current accumulated value at a past decision point. |
+| **Type/timezone divergence** — `Decimal` vs `float`, naive vs tz-aware datetime | Always normalise at the boundary. DataProvider returns `float` and tz-aware UTC. |
 | **Signature missing critical fields** producing `regime=UNKNOWN` trades | Check for `[FIELD-COVERAGE]` warnings; they fire when a critical D-Limit field is None at decision time |
 | **Single-pair assumptions** in shared state | Each pair is a separate thread + strategy instance. Don't share mutable dicts without locks |
 
@@ -551,71 +416,31 @@ These are real failures from the project's history. Worth a re-read before going
 
 ## 10. Where to ask for help
 
-The project is in transition — the public-facing repo for user strategies is being separated from the internal dev repo. For the v2.2.0 timeframe:
+- **GitHub Issues:** [`github.com/timoz10/spirit-platform`](https://github.com/timoz10/spirit-platform/issues) — bug reports, feature requests, strategy questions. Tag with `strategy-help`.
+- **AI-assisted authoring:** point your coding LLM (Cursor, Claude Code, Copilot) at [`STRATEGY_LLM_CONTEXT.md`](STRATEGY_LLM_CONTEXT.md) — a dense, machine-readable version of this contract designed for that workflow.
+- **Knowledge base:** a searchable how-to library on `tradebot.live` is in the works.
 
-- **Internal users (Tim, Davy):** GitHub Issues on `timoz10/Bot`. Tag with `strategy-help`.
-- **External users (when paid tiers open):** A new public `spirit-platform` repo will host issues, examples, and a knowledge base. The exact URL ships with the public launch.
-
-For AI-assisted authoring, point your coding LLM (Cursor, Claude Code, Copilot) at [`STRATEGY_LLM_CONTEXT.md`](STRATEGY_LLM_CONTEXT.md) — a dense, machine-readable version of this contract designed for that workflow. We're also building a searchable knowledge base on `tradebot.live` with how-tos, planned post-v2.2.0.
-
-For now, if you're stuck: open an issue with the strategy file attached, the log lines around the failure, and what you expected to happen.
+If you're stuck: open an issue with the strategy file attached, the log lines around the failure, and what you expected to happen.
 
 ---
 
-## Conventions cheatsheet
+## Conventions
 
-- **One strategy per file.** The loader picks the first concrete `BaseStrategy` subclass; multiple classes in one file is technically allowed but confusing.
-- **Class name is up to you.** Snake-case the filename, PascalCase the class. The loader doesn't enforce this — but humans reading logs will appreciate consistency.
-- **Constructor takes `**_kwargs`.** The orchestrator may pass `filter_pair`, `filter_interval`, and other context. Accept and ignore unknowns gracefully.
-- **`get_data_requirements()` is your contract.** If your strategy needs 1-minute candles for monitoring, declare it — the orchestrator subscribes accordingly. If you skip this, you get default behaviour (XBTUSD / 60m / 720 warmup).
+- **One strategy per file.** The loader picks the first concrete `BaseStrategy` subclass; extras are silently ignored.
+- **Snake-case the filename, PascalCase the class.** Not enforced, but consistent.
+- **Constructor takes `**_kwargs`.** The orchestrator may pass `filter_pair`, `filter_interval`, etc. Accept and ignore unknowns.
+- **`get_data_requirements()` is your contract.** Declare what you need or you get the default (XBTUSD / 60m / 720 warmup).
 
 ---
 
-## Backtesting before #500 lands
+## Backtesting
 
-Spirit's per-user dev/prod data isolation (#500) will give you a clean separate endpoint and table set for backtests. **Until that ships (target v2.3.0)**, you have two options for backtesting on the platform:
+Two options until per-user dev tables ship:
 
-### Option A — backtest locally (recommended)
+- **Local (recommended).** Run with a `CsvDataProvider` or replay mode; writes go to local SQLite. Fully isolated, no contamination of central data. Best for iteration, parameter sweeps, and multi-run comparisons.
+- **Central tables with your own instance slug.** `POST /v1/performance` with your `instance` — rows are RLS-isolated from other users. Acceptable for a single backtest you want stored centrally; just filter by `run_id != 'live'` when reading.
 
-Run backtests directly on your box without touching central PG. Output goes to a local SQLite database. This is fully isolated from everyone else's data and from your own production trades.
-
-**When to pick this**: any iterative strategy development, parameter sweeps, multi-run comparisons.
-
-**Limitations**: results stay local; you can't share them via the platform; no cloud-side storage.
-
-### Option B — write to production tables with your own `instance` slug
-
-Use the existing `POST /v1/performance` endpoint with `instance='<your-slug>'`. Your rows are RLS-isolated from every other user — they can't see your data, you can't see theirs. The only "contamination" is into your own production-trade history.
-
-**When to pick this**: a single backtest where you want central storage and don't mind it living alongside your live trades temporarily. You can prune them by `run_id` once #500 lands.
-
-**Limitations**:
-- Your backtest rows show up in your own `instance`'s production trade history. If you query "all my trades" you'll see backtests mixed in until you filter by `run_id != 'live'`.
-- No per-run quota or retention — long-running iterative backtests will accumulate.
-- When #500 lands, you'll need to migrate these rows to the dev tables (one-shot script, not painful).
-
-**Pattern**:
-```python
-# In your strategy/backtest code, set a distinctive run_id per backtest session
-import uuid
-run_id = f"backtest-{uuid.uuid4()}"
-
-# Then write trades via the existing endpoint
-POST /v1/performance
-{
-  "strategy_name": "my_strategy",
-  "instance": "<your-slug>",
-  "run_id": run_id,            # not 'live' or 'paper'
-  "source": "backtest",
-  ...
-}
-```
-
-The `run_id` discipline matters: even within Option B, **always use a fresh UUID per backtest run**. This prevents your runs from corrupting each other (Tim hit this exact bug; it's why #500's dev tables enforce per-run uniqueness).
-
-### Migration to #500 when it lands
-
-Once #500 ships, dev backtest output moves to `/v1/dev/performance` and `public.dev_strategy_performance`. We'll provide a one-shot migration: rows in your production tables with `run_id LIKE 'backtest-%'` will move to the dev tables, leaving your live/paper rows in place. No data loss.
+**Discipline either way:** use a fresh UUID per backtest run (`run_id = f"backtest-{uuid.uuid4()}"`). Reused `run_id`s corrupt calibrator buffers.
 
 ---
 
@@ -626,11 +451,6 @@ Once #500 ships, dev backtest output moves to `/v1/dev/performance` and `public.
 - [`PERMISSIONS.md`](PERMISSIONS.md) — tier matrix, instance scoping, RLS
 - [`USER_LIFECYCLE.md`](USER_LIFECYCLE.md) — how your key + instance work
 - [`../EXCHANGE_PLUGIN_GUIDE.md`](../EXCHANGE_PLUGIN_GUIDE.md) — same pattern, but for adding a new exchange
-- [`../TESTING_STANDARDS.md`](../TESTING_STANDARDS.md) — backtest rigour, look-ahead bias
 - `src/spirit/strategies/base.py` — the `BaseStrategy` ABC
 - `src/spirit/strategy_config.py` — registry + user-strategy loader
 - `src/spirit/strategies/zone_bounce.py` — the production reference strategy
-- `CLAUDE.md` — module rules (Rules 1-11), data-flow architecture
-- #500 — Per-user dev/prod data isolation (full architecture)
-- #501 — Tiered retention + storage caps
-- `docs/features/platform/DEV_PROD_DATA_ISOLATION.md` — design doc
