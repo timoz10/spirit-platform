@@ -26,7 +26,6 @@ If a user asks "how do I X", answer from this file's tables. If you need to veri
 | `docs/reference/platform/WRITING_A_STRATEGY.md` | Human tutorial — narrative version of this file |
 | `docs/reference/platform/PLATFORM_API.md` | HTTP+WS API (the gateway underneath DataProvider) |
 | `docs/reference/platform/PERMISSIONS.md` | Tier matrix, RLS, instance scoping |
-| `CLAUDE.md` | Module rules 1–11; data flow architecture |
 
 User strategies live at `~/.spirit/strategies/<name>.py` (override with `SPIRIT_STRATEGIES_DIR`).
 
@@ -146,19 +145,15 @@ Get the singleton via `from spirit.utils.data_provider import get_data_provider;
 | `get_bounce_references` | `(*, pair=None, regime=None, min_dt=None)` | `bounce_reference` rows |
 | `get_dlimit` | `(pair, interval=60, *, at=None, start=None, end=None, limit=5000)` | D-Limit indicator rows |
 | `get_dlimit_latest` | `(pair, interval=60, *, before=None)` | Most recent D-Limit row |
-| `get_consolidation` | `(pair, interval=60, *, at=None, start=None, end=None, limit=5000)` | Module 7 consolidation signals |
+| `get_consolidation` | `(pair, interval=60, *, at=None, start=None, end=None, limit=5000)` | Consolidation signals |
 | `get_orderbook` | `(pair, *, start=None, end=None, limit=100)` | Orderbook depth metrics |
 | `get_orderbook_events_summary` | `(pair, *, lookback_minutes=15, at=None)` | Grouped event counts |
 | `get_cooldown_calibration` | `(pair, *, interval=60, lookback_months=12)` | Break→recovery events for cooldown calibrator |
 | `get_risk_gate_calibration` | `(pair, *, calibrate_before=None)` | Resolved risk-gate decisions (regime, rr_ratio, win flags) |
-| `get_entry_quality_calibration` | `(dimension, *, as_of=None)` | Bucketed win-rate + MFE; `dimension` ∈ {slope_angle, zone_touches, touch_gap_hours, displacement_24h, trend_end_confidence} |
+| `get_entry_quality_calibration` | `(dimension, *, as_of=None)` | Bucketed win-rate + MFE across various entry-quality dimensions; see `PERMISSIONS.md` for the current set |
 | `get_volatility_context` | `(pair, interval, *, as_of=None)` | `dict` with atr_14d / atr_30d / atr_90d, or `None` |
 | `get_composite_outcomes` | `(*, calibrate_before=None)` | Per-trade outcome rows for threshold sweeps |
-| `write_risk_gate` | `(data: dict)` | Audit row |
 | `write_thesis` / `update_thesis_outcome` / `update_thesis_checks` | `(data: dict)` | Trade thesis lifecycle |
-| `write_scorer_outcome` | `(data: dict)` | Scorer audit |
-| `write_regime_decision` | `(data: dict)` | Regime classification audit |
-| `write_scene` / `write_trajectory` | `(data: dict)` | Tumbler observations |
 
 **All datetimes returned by DataProvider are tz-aware UTC (Rule 11). All numerics are Python `float` (not `Decimal`).**
 
@@ -176,10 +171,10 @@ class PipelineEvent:
     rows_affected: int = 0
     duration_ms: int = 0
     metadata: Dict[str, Any] = {}
-    row: Optional[Dict[str, Any]] = None   # canonical stage-row payload (#493)
+    row: Optional[Dict[str, Any]] = None   # canonical stage-row payload
 ```
 
-**The `row` field is the canonical row that the upstream stage just wrote.** Read it directly — do **not** issue a fresh fetch from `on_pipeline_event` to get the same data; until 2026-04-29 strategies raced against commit visibility and read stale or missing rows. If `row` is `None` (oversized payload, very rare), fall back to `dp.get_dlimit_latest(...)`.
+**The `row` field is the canonical row that the upstream stage just wrote.** Read it directly — do **not** issue a fresh fetch from `on_pipeline_event` to get the same data; strategies that re-fetched used to race against commit visibility and read stale or missing rows. If `row` is `None` (oversized payload, very rare), fall back to `dp.get_dlimit_latest(...)`.
 
 ```python
 def on_pipeline_event(self, event):
@@ -217,11 +212,11 @@ When `uses_risk_gate = False` (default) the strategy fully owns sizing — set `
 | `SPIRIT_STRATEGIES_DIR` | Override user dir | `~/.spirit/strategies` |
 | `SPIRIT_INSTANCE` | Instance label (e.g. `customer-47`) | none (required for cloud writes) |
 | `SPIRIT_API_KEY` | Gateway API key | none (required) |
-| `SPIRIT_API_URL` | Gateway base URL | `http://10.0.0.4:8000/v1` (overridden in prod) |
+| `SPIRIT_API_URL` | Gateway base URL | `https://api.tradebot.live/v1` |
 
 ### Resolution order (`get_strategy` in `strategy_config.py`)
 1. Built-in production: `src/spirit/strategies/` (currently just `zone_bounce`)
-2. Built-in experimental: `src/spirit/strategies/experimental/` (`macd_cross`, `rsi_reversion`, `spine`, `regime_engine`, `test`)
+2. Built-in experimental: `src/spirit/strategies/experimental/` (e.g. `macd_cross`, `rsi_reversion`)
 3. User dir: `$SPIRIT_STRATEGIES_DIR/<name>.py`
 
 ### Loader behaviour (`_load_user_strategy`)
@@ -244,12 +239,12 @@ If a method 403s, the response includes the required tier — propagate as a cle
 
 ---
 
-## 9. Hard rules (non-negotiable; from CLAUDE.md)
+## 9. Hard rules (non-negotiable)
 
-- **Rule 6 — Pipeline sync:** strategies that depend on D-Limit / zones / consolidation must subscribe via `on_pipeline_event` and tolerate stale data with explicit logging, not silent waits. Never block on a synchronous "wait for fresh data" — the api-mode pipeline is push-based.
-- **Rule 9 — No static market thresholds:** "ATR > 0.5", "slope > 30°" hardcoded constants are a code-review red flag. Derive thresholds from data: percentiles over the last N days, neighbour-pair distributions, regime-conditioned histograms. Use `get_volatility_context`, `get_entry_quality_calibration`, `get_composite_outcomes`.
-- **Rule 10 — Real-time signals first:** prefer D-Limit zones, orderbook deltas, bounce events, tumblers. Avoid lagging indicators (EMA/SMA crossovers) as primary signals. They're allowed as confirmations, never as triggers.
-- **Rule 11 — Type / timezone normalisation:** DataProvider returns `float` (not `Decimal`) and tz-aware UTC datetimes. If you stringify and re-parse, always end up at tz-aware UTC. Naive datetimes bit production hard at DST (#488); cache keys must use UTC strftime.
+- **Pipeline sync:** strategies that depend on D-Limit / zones / consolidation must subscribe via `on_pipeline_event` and tolerate stale data with explicit logging, not silent waits. Never block on a synchronous "wait for fresh data" — the api-mode pipeline is push-based.
+- **No static market thresholds:** "ATR > 0.5", "slope > 30°" hardcoded constants are a code-review red flag. Derive thresholds from data: percentiles over the last N days, neighbour-pair distributions, regime-conditioned histograms. Use `get_volatility_context`, `get_entry_quality_calibration`, `get_composite_outcomes`.
+- **Real-time signals first:** prefer D-Limit zones, orderbook deltas, and bounce events. Avoid lagging indicators (EMA/SMA crossovers) as primary signals — they're allowed as confirmations, never as triggers.
+- **Type / timezone normalisation:** DataProvider returns `float` (not `Decimal`) and tz-aware UTC datetimes. If you stringify and re-parse, always end up at tz-aware UTC. Naive datetimes once bit production hard at DST; cache keys must use UTC strftime.
 
 ---
 
@@ -260,18 +255,18 @@ If a method 403s, the response includes the required tier — propagate as a cle
 - Set `self.filter_pair = pair` (and `self.filter_interval`) in `__init__` so the default `get_data_requirements` works.
 - Read `event.row` in `on_pipeline_event`, fall back to `dp.get_*_latest(...)` only if `row is None`.
 - Log with `[TAG]` prefixes and the pair: `f"[{pair}][ENTRY] score={score:.2f}"`.
-- Use a fresh `run_id = f"backtest-{uuid.uuid4()}"` for every backtest write; reusing run_ids corrupts the calibrator buffers (#500 enforces uniqueness once shipped).
+- Use a fresh `run_id = f"backtest-{uuid.uuid4()}"` for every backtest write; reusing run_ids corrupts the calibrator buffers.
 - Soak in `paper` mode for ≥24h before flipping to `live`. Watch for zero `[FIELD-COVERAGE]` / `[PAYLOAD-MISS]` warnings.
 - Smoke-test by importing the file and calling `evaluate_trade('XBTUSD', 'test')` outside Spirit before restarting the service.
 
 **DO NOT**
 - Hardcode a market threshold without deriving it from data (Rule 9).
-- Issue a fetch in `on_pipeline_event` to get the row that just landed — read `event.row` (Rule 6 / #493).
+- Issue a fetch in `on_pipeline_event` to get the row that just landed — read `event.row` (see §5).
 - Share mutable dicts across pair instances without an explicit `threading.Lock` — each pair is its own thread.
-- Write to PostgreSQL directly from a strategy. There is no PG connection in api-mode (#341); use DataProvider methods.
+- Write to PostgreSQL directly from a strategy. There is no PG connection in api-mode; use DataProvider methods.
 - Use `Decimal` arithmetic. DataProvider normalises NUMERIC → float. Mixing causes type errors.
-- Use naive datetimes. Always tz-aware UTC (#488).
-- Calibrate from experimental tables (`zone_exit_features`, `whipsaw_dataset`). Production strategies read production tables only (Rule 5).
+- Use naive datetimes. Always tz-aware UTC.
+- Calibrate from experimental or ML-training tables. Production strategies read production tables only.
 - Put more than one concrete `BaseStrategy` subclass in a user-strategy file — the loader picks the first one and silently ignores the rest.
 - Skip `validate_readiness` for a strategy with non-trivial warmup needs; the GREEN/YELLOW LIGHT log is your post-warmup sanity check.
 
