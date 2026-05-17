@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spirit-platform"
-version = "2.2.2"
+version = "2.2.2.post1"
 description = "Programmable cryptocurrency trading platform — write your own strategies, run on your own hardware"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -38,6 +38,7 @@ dependencies = [
     "pyyaml>=6.0",
     "requests>=2.32",
     "six>=1.17",
+    "ta>=0.11",
     "tzdata>=2025.2",
     "urllib3>=2.4",
     "websockets>=13",
@@ -64,3 +65,9 @@ spirit-health = "spirit.health:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["spirit*"]
+
+[tool.setuptools.package-data]
+# Non-Python files shipped inside the wheel. Spirit's runtime needs the
+# SQLite schema at first connect — without this glob it lands as orphan
+# source-only and `executescript()` fails with "No such file or directory".
+"spirit.storage" = ["*.sql"]

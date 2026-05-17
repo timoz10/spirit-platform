@@ -310,7 +310,7 @@ class SpiritContext:
     def _pg_key(self, key: str, strategy_name: str = '') -> str:
         """Return prefixed PG state key.
 
-        Multi-strategy format: 'open_trade:zone_bounce:XBTUSD'
+        Multi-strategy format: 'open_trade:macd_demo:XBTUSD'
         Single-strategy format: 'open_trade:XBTUSD' (backward compat)
         """
         if strategy_name:

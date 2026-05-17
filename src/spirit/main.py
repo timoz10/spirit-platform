@@ -1661,8 +1661,14 @@ def main():
     is_spine = False
     first_strategy = next(iter(strategies.values()), None) if strategies else None
     if first_strategy is not None:
-        from spirit.strategies.experimental.spine import SpineStrategy
-        is_spine = isinstance(first_strategy, SpineStrategy)
+        # SpineStrategy lives in the experimental tree and is excluded from the
+        # public bundle. Non-Spine strategies don't need it importable —
+        # treat missing import as "definitely not Spine".
+        try:
+            from spirit.strategies.experimental.spine import SpineStrategy
+            is_spine = isinstance(first_strategy, SpineStrategy)
+        except ImportError:
+            is_spine = False
 
     if is_spine and first_strategy is not None:
         # Build StrategyRegistry from Spine's config-loaded children
