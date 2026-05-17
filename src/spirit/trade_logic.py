@@ -161,7 +161,7 @@ class StrategyTradeStateManager:
 
 
 class MultiStrategyTradeStateManager:
-    """Keyed by (pair, strategy_name). Replaces MultiPairTradeStateManager for Spine.
+    """Keyed by (pair, strategy_name).
 
     Supports multiple concurrent trades per pair (one per strategy), controlled
     by max_concurrent_per_pair.

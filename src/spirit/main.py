@@ -24,7 +24,11 @@ from spirit.logger import get_logger
 from spirit.config import KRAKEN_OHLC_COUNT, KRAKEN_OHLC_INTERVAL
 from spirit.utils.config_loader import get_config
 from spirit.utils.data_source import LiveDataSource, CsvDataSource
-from spirit.utils.decision_recorder import record_entry as _dump_entry, record_exit as _dump_exit
+try:
+    from spirit.utils.decision_recorder import record_entry as _dump_entry, record_exit as _dump_exit
+except ImportError:
+    def _dump_entry(*a, **kw): pass
+    def _dump_exit(*a, **kw): pass
 
 # Optional multi-interval sources (may not exist on all branches)
 try:
