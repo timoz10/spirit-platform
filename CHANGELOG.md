@@ -37,7 +37,7 @@ _No unreleased changes yet._
 
 ### Notes
 
-Initial publish of 2.2.2 (yanked) was missing several runtime-imported modules from the wheel; republished as 2.2.2.post1 the same day with the complete bundle and the new CI smoke gate. Anyone running `pip install spirit-platform` resolves to the 2.2.2.post1 distribution.
+Initial publish of 2.2.2 (yanked) was missing several runtime-imported modules from the wheel; republished as 2.2.2.post1 the same day with the complete bundle and the new CI smoke gate. 2.2.2.post2 added the `spirit-setup` console script (was previously only invokable as `python -m spirit.setup`, which doesn't work on pipx installs because pipx isolates the package from the system Python). Anyone running `pip install spirit-platform` resolves to the latest 2.2.2.postN distribution.
 
 
 ## [2.2.1] — 2026-05-14

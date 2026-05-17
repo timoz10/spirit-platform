@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spirit-platform"
-version = "2.2.2.post1"
+version = "2.2.2.post2"
 description = "Programmable cryptocurrency trading platform — write your own strategies, run on your own hardware"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -58,6 +58,7 @@ Issues = "https://github.com/timoz10/spirit-platform/issues"
 
 [project.scripts]
 spirit = "spirit.main:main"
+spirit-setup = "spirit.setup:main"
 spirit-preflight = "spirit.utils.preflight:main"
 spirit-uninstall = "spirit.uninstall:main"
 spirit-health = "spirit.health:main"
