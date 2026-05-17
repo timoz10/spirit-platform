@@ -21,7 +21,7 @@ logger = get_logger("strategy_registry")
 @dataclass
 class StrategySlot:
     """One registered strategy with its routing metadata."""
-    name: str                             # "zone_bounce"
+    name: str                             # e.g. "macd_demo"
     strategy: BaseStrategy
     signal_interval: int                  # 60
     monitoring_intervals: Set[int]        # {1}
@@ -44,7 +44,7 @@ class StrategyRegistry:
         """Register a strategy and build routing indexes.
 
         Args:
-            name: Unique strategy name (e.g. "zone_bounce")
+            name: Unique strategy name (e.g. "macd_demo")
             strategy: BaseStrategy instance
             pairs: Which pairs this strategy trades
 

@@ -24,7 +24,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from spirit.logger import get_logger
-from spirit.utils.db_connection import execute_query
+
+# db_connection is gateway/dev-only; api-mode public installs don't have it.
+# Importing run_manager must succeed for LIVE_RUN_ID export even when DB is
+# absent. Functions below import execute_query lazily inside their bodies.
 
 logger = get_logger("run_manager")
 
@@ -59,6 +62,7 @@ def register_run(
         git_hash: Short git hash at time of run
     """
     import json
+    from spirit.utils.db_connection import execute_query
 
     execute_query("""
         INSERT INTO replay_runs (id, tag, strategy_name, pairs, start_date, end_date,
@@ -88,6 +92,8 @@ def finalize_run(run_id: str, status: str = 'completed') -> Dict[str, Any]:
     Returns:
         Dict with summary stats (total_trades, win_rate, profit_factor, net_pnl_pct)
     """
+    from spirit.utils.db_connection import execute_query
+
     # Compute summary stats from this run's trades
     stats = execute_query("""
         SELECT
@@ -145,6 +151,8 @@ def list_runs(limit: int = 20) -> List[Dict[str, Any]]:
 
     Returns list of dicts with run metadata and summary stats.
     """
+    from spirit.utils.db_connection import execute_query
+
     rows = execute_query("""
         SELECT id, tag, strategy_name, pairs, start_date, end_date,
                git_hash, status, started_at, completed_at,
@@ -166,6 +174,8 @@ def delete_run(run_id: str) -> Dict[str, int]:
     """
     if run_id == LIVE_RUN_ID:
         raise ValueError("Cannot delete live data via delete_run(). Use direct SQL if needed.")
+
+    from spirit.utils.db_connection import execute_query
 
     counts = {}
 

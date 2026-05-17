@@ -61,9 +61,93 @@ jobs:
           path: dist/
           retention-days: 7
 
+  smoke-runtime:
+    name: Runtime smoke test on built wheel
+    needs: build
+    runs-on: ubuntu-latest
+    # Catches the v2.2.2 failure class: wheel imports cleanly but main()
+    # crashes on a runtime-imported module that's missing from the bundle.
+    # Installs the freshly-built wheel into a clean pipx venv and runs
+    # `spirit --mode test` for 30s, then asserts: (a) no Python traceback,
+    # (b) no ModuleNotFoundError, (c) preflight reached "All checks passed"
+    # or "FAIL  env_vars" (both indicate main() got past imports cleanly).
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pipx
+        run: python -m pip install --upgrade pipx
+
+      - name: Install built wheel via pipx
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          echo "Installing $WHEEL"
+          pipx install "$WHEEL"
+
+      - name: Smoke — spirit-health (must exit cleanly)
+        run: spirit-health
+
+      - name: Smoke — spirit-preflight (expect env_vars FAIL, no traceback)
+        run: |
+          set +e
+          spirit-preflight 2>&1 | tee preflight.log
+          set -e
+          if grep -q "Traceback\|ModuleNotFoundError" preflight.log; then
+            echo "::error::preflight produced a Python traceback"
+            exit 1
+          fi
+
+      - name: Smoke — spirit --mode test (30s runtime)
+        run: |
+          # Provide minimal env so spirit reaches main() without env-var
+          # bail-out. Free-tier strategy + a synthetic pair list = paper
+          # trading loop runs without needing a Kraken key.
+          export SPIRIT_STRATEGY=macd_demo
+          export SPIRIT_INSTANCE=ci-smoke
+          export SPIRIT_PAIRS=XBTUSD
+          export SPIRIT_API_KEY=ci-smoke-dummy
+          export EXCHANGE_API_KEY=ci-smoke-dummy
+          export EXCHANGE_API_SECRET=ci-smoke-dummy
+          set +e
+          timeout --preserve-status 30 spirit --mode test 2>&1 | tee runtime.log
+          STATUS=$?
+          set -e
+
+          # timeout returns 124 on SIGTERM (expected — we deliberately
+          # kill it). Anything else means spirit died on its own.
+          if [ "$STATUS" != "124" ] && [ "$STATUS" != "143" ] && [ "$STATUS" != "0" ]; then
+            echo "::error::spirit --mode test exited with $STATUS (expected 124/143 from timeout)"
+            tail -40 runtime.log
+            exit 1
+          fi
+
+          if grep -q "Traceback\|ModuleNotFoundError" runtime.log; then
+            echo "::error::spirit --mode test produced a Python traceback"
+            grep -B2 -A10 "Traceback\|ModuleNotFoundError" runtime.log
+            exit 1
+          fi
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: |
+            preflight.log
+            runtime.log
+          retention-days: 7
+
   publish-testpypi:
     name: Publish to TestPyPI (release candidates)
-    needs: build
+    needs: smoke-runtime
     runs-on: ubuntu-latest
     # Trigger TestPyPI ONLY for rc / test tags (e.g. v2.2.1-rc1).
     # Full-release tags (v2.2.1) skip this job and route to PyPI below.
@@ -90,7 +174,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI (full releases)
-    needs: build
+    needs: smoke-runtime
     runs-on: ubuntu-latest
     # Full-release tags only — exclude rc / test pre-release suffixes.
     if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-test') }}

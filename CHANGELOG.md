@@ -24,15 +24,20 @@ _No unreleased changes yet._
 
 ### Fixed
 
-- **Headline `spirit` command crashed on a fresh `pip install`.** The v2.2.1 wheel shipped with five top-level imports of modules that weren't in the public allowlist (`spirit.data_types`, `spirit.utils.decision_recorder`, `spirit.trade_logic`, `spirit.pending_order_manager`, `spirit.pipeline.event_logger`). Any invocation of the `spirit` console_script raised `ModuleNotFoundError` before argparse ran. Three of the missing modules (data_types, trade_logic, pending_order_manager) are now bundled; the other two stay private with the callers' imports made lazy. (#714)
+- **Headline `spirit` command crashed on a fresh `pip install`.** The v2.2.1 wheel shipped with imports of modules that weren't in the public allowlist. Any invocation of the `spirit` console_script raised `ModuleNotFoundError` — first at module-load time (`spirit.data_types` and four siblings, fixed in the initial v2.2.2 push) and then at `main()` runtime (`spirit.utils.run_manager`, `spirit.context_manager`, `spirit.strategy_registry`, `spirit.web`, fixed in 2.2.2.post1). Plus a missing `spirit/storage/sqlite_schema.sql` data file in the wheel. `spirit --mode paper` now runs end-to-end.
 
 ### Added
 
-- **`INSTALL.md`** at repo root, covering pipx-based install (the recommended path on PEP 668 distros: Ubuntu 23.04+, Debian 12+), venv fallback, verification, first-run steps, troubleshooting, upgrade, and uninstall. Supported platforms line marks macOS / Windows as unverified at this stage. (#714)
+- **`INSTALL.md`** at repo root, covering pipx-based install (the recommended path on PEP 668 distros: Ubuntu 23.04+, Debian 12+), venv fallback, verification, first-run steps, troubleshooting, upgrade, and uninstall. Supported platforms line marks macOS / Windows as unverified at this stage.
+- **CI runtime smoke gate.** `publish.yml` now runs `spirit --mode test` against the built wheel before publishing — catches "wheel imports but main() crashes" regressions like the one above.
 
 ### Changed
 
-- README quick start rewritten to lead with `pipx` and link to `INSTALL.md` for full instructions. The previous `pip install spirit-platform` line failed on modern Ubuntu / Debian. (#714)
+- README quick start rewritten to lead with `pipx` and link to `INSTALL.md` for full instructions. The previous `pip install spirit-platform` line failed on modern Ubuntu / Debian.
+
+### Notes
+
+Initial publish of 2.2.2 (yanked) was missing several runtime-imported modules from the wheel; republished as 2.2.2.post1 the same day with the complete bundle and the new CI smoke gate. Anyone running `pip install spirit-platform` resolves to the 2.2.2.post1 distribution.
 
 
 ## [2.2.1] — 2026-05-14
