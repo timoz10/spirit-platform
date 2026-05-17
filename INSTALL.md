@@ -43,12 +43,40 @@ You should see `Process: NOT running` and `Local DB: not found` — that's expec
 
 ## First run
 
+### 1. Run the setup wizard
+
 ```bash
-python3 -m spirit.setup        # interactive wizard
-spirit --mode paper            # start paper trading
+spirit-setup
 ```
 
-The wizard asks your tier (Free / Plus / Pro), your instance name, and an optional Kraken API key for live trading.
+The wizard walks you through:
+
+- **Tier** — `Free` (local SQLite, no API key required, BYO strategy) or `Plus/Pro` (gateway-backed, custom indicators + scorer + risk-gate; get an API key at [portal.tradebot.live](https://portal.tradebot.live))
+- **Instance name** — short kebab-case label (e.g. `test`, `prod`, `alice`). Becomes the path under `~/.spirit/<instance>/` for that instance's state.
+- **Strategy** — pick `macd_demo` or `sma_crossover` from the bundled examples, or **Custom** to point at your own file under `~/.spirit/strategies/`.
+- **Kraken API keys** — optional, only needed for live trading. Skip for paper mode.
+
+The wizard writes `spirit.yaml` and `.env` files; their paths are printed at the end.
+
+### 2. Sanity-check
+
+```bash
+spirit-preflight
+```
+
+All checks should PASS for Free tier (env vars + disk space). Plus/Pro adds gateway connectivity + capability checks.
+
+### 3. Start trading
+
+```bash
+spirit --mode paper        # paper trading (recommended for first run)
+spirit --mode test         # dry-run, no orders placed
+spirit --mode live         # real money — only after paper validation
+```
+
+On a successful start you'll see a `[GREEN LIGHT]` line for each pair when the warmup buffer is ready (~30s on a fresh start), then `[SPIRIT] alive` periodic heartbeats every 30 minutes, plus strategy log lines when signals fire.
+
+Stop with `Ctrl-C` for a graceful shutdown.
 
 ## Troubleshooting
 
