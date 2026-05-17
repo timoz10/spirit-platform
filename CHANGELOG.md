@@ -20,6 +20,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 _No unreleased changes yet._
 
 
+## [2.2.2] — 2026-05-17
+
+### Fixed
+
+- **Headline `spirit` command crashed on a fresh `pip install`.** The v2.2.1 wheel shipped with five top-level imports of modules that weren't in the public allowlist (`spirit.data_types`, `spirit.utils.decision_recorder`, `spirit.trade_logic`, `spirit.pending_order_manager`, `spirit.pipeline.event_logger`). Any invocation of the `spirit` console_script raised `ModuleNotFoundError` before argparse ran. Three of the missing modules (data_types, trade_logic, pending_order_manager) are now bundled; the other two stay private with the callers' imports made lazy. (#714)
+
+### Added
+
+- **`INSTALL.md`** at repo root, covering pipx-based install (the recommended path on PEP 668 distros: Ubuntu 23.04+, Debian 12+), venv fallback, verification, first-run steps, troubleshooting, upgrade, and uninstall. Supported platforms line marks macOS / Windows as unverified at this stage. (#714)
+
+### Changed
+
+- README quick start rewritten to lead with `pipx` and link to `INSTALL.md` for full instructions. The previous `pip install spirit-platform` line failed on modern Ubuntu / Debian. (#714)
+
+
 ## [2.2.1] — 2026-05-14
 
 First public release. Spirit ships as `pip install spirit-platform` from PyPI. Free tier runs entirely on your machine against your own exchange keys; Plus and Pro extend with hosted D-Limit indicators, Bring-Your-Own-Data historical OHLC storage, and cloud-backed trade history with crash recovery.

@@ -14,7 +14,15 @@ from typing import Optional
 
 from spirit.logger import get_logger
 from spirit.pipeline.event_bus import PipelineEvent, PipelineEventBus
-from spirit.pipeline.event_logger import check_event_exists
+
+# event_logger is gateway/data-platform only; on api-mode/public installs it's
+# absent. wait_for_* methods short-circuit on `event_bus is None` long before
+# check_event_exists fires, so the False fallback is never observed by public
+# users — but the lazy try/except keeps the top-level import safe.
+try:
+    from spirit.pipeline.event_logger import check_event_exists
+except ImportError:
+    def check_event_exists(*a, **kw): return False
 
 logger = get_logger("readiness_gate")
 

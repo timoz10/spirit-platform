@@ -8,11 +8,24 @@ The framework is open source under Apache-2.0. Spirit handles the orchestration:
 
 ## Quick start
 
+On Ubuntu / Debian (and most modern Linux):
+
 ```bash
-pip install spirit-platform
-python3 -m spirit.setup     # interactive setup wizard
-python3 -m spirit.main --mode paper
+sudo apt install -y pipx
+pipx ensurepath
+pipx install spirit-platform
 ```
+
+Then open a new shell and run:
+
+```bash
+python3 -m spirit.setup     # interactive setup wizard
+spirit --mode paper         # start paper trading
+```
+
+> **macOS, venv-based install, troubleshooting:** see [INSTALL.md](INSTALL.md).
+>
+> Note: bare `pip install spirit-platform` will fail on modern Ubuntu/Debian (PEP 668 — externally-managed environment). `pipx` is the recommended path.
 
 Run the wizard once (it asks your tier, instance name, and an optional Kraken API key for live trading), pick one of the bundled examples (`sma_crossover` or `macd_demo`) or drop your own file in `~/.spirit/strategies/`, and Spirit starts paper-trading.
 
