@@ -13,9 +13,12 @@ Implementations:
 
 from spirit.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from spirit.pipeline.readiness_gate import DataReadinessGate
-from spirit.pipeline.event_logger import record_pipeline_event
 from spirit.pipeline.daemon_health import record_heartbeat
 from spirit.pipeline.freshness_cache import PipelineFreshnessCache
+
+# event_logger is gateway/data-platform only — not shipped to api-mode clients.
+# Resolved lazily via __getattr__ so importing `spirit.pipeline` doesn't crash
+# on api-mode/public installs where event_logger.py is absent.
 
 # WsEventBus lazy-imported below — it depends on `websockets`, which is only
 # installed on api-mode consumers (canary, prod). Ingestion hosts (DEV daemons)
@@ -40,4 +43,8 @@ def __getattr__(name):
         globals()['WsEventBus'] = WsEventBus
         globals()['derive_ws_url'] = derive_ws_url
         return globals()[name]
+    if name == 'record_pipeline_event':
+        from spirit.pipeline.event_logger import record_pipeline_event
+        globals()['record_pipeline_event'] = record_pipeline_event
+        return record_pipeline_event
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
