@@ -1,0 +1,244 @@
+# RC validation — multi-platform fresh-install matrix.
+#
+# Triggered by tags matching v*-rc* / v*-test* pushed to the public
+# mirror. Designed to live on `timoz10/spirit-platform` (the public
+# mirror), where the publish.yml workflow already lives. This file
+# is part of the private repo so it travels through the public-mirror
+# allowlist when merged.
+#
+# Phase 2 gate from RELEASE_ENGINEERING_PROCESS.md: the multi-platform
+# install matrix. If any platform's `pipx install` + runtime smoke
+# fails, the RC is rejected and the release does not proceed.
+#
+# How it fits in the publish chain:
+#   - publish.yml fires on the same tag and uploads to TestPyPI
+#   - This workflow waits for TestPyPI to have the artifact, then
+#     installs from TestPyPI on each platform
+#   - Both run in parallel against the same tag — no inter-dependency
+#
+# Required for promotion to a full-release tag:
+#   - All platforms must reach GREEN LIGHT
+#   - Zero Python tracebacks or ModuleNotFoundErrors
+
+name: RC Validation (multi-platform install matrix)
+
+on:
+  push:
+    tags:
+      - 'v*-rc*'
+      - 'v*-test*'
+
+concurrency:
+  group: rc-validation-${{ github.ref }}
+  cancel-in-progress: false   # don't cancel mid-soak
+
+jobs:
+  wait-for-testpypi:
+    name: Wait for TestPyPI to serve the artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Parse version from tag
+        id: parse
+        run: |
+          # github.ref is refs/tags/vX.Y.Z-rcN (e.g. v2.2.3-rc1).
+          #
+          # Current convention (matches v2.2.1 launch + publish.yml as-built):
+          # the WHEEL VERSION is the bare X.Y.Z — the -rcN suffix on the tag
+          # is used only by publish.yml to route to TestPyPI vs PyPI. The
+          # wheel filename comes from pyproject.toml.public, which holds the
+          # bare version. So `v2.2.3-rc1` and `v2.2.3` both produce
+          # `spirit_platform-2.2.3-...whl`; the only difference is which
+          # index it lands on.
+          #
+          # Trade-off: single-RC only — a failed rc1 can't be replaced by
+          # rc2 because TestPyPI rejects same-version re-uploads. Tracked
+          # at #728 for the PEP-440-RC-suffix migration.
+          TAG="${GITHUB_REF#refs/tags/v}"
+          WHEEL_VERSION="${TAG%-rc*}"
+          WHEEL_VERSION="${WHEEL_VERSION%-test*}"
+          echo "version=${WHEEL_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Tag is v${TAG}, wheel version is ${WHEEL_VERSION}"
+
+      - name: Poll TestPyPI for the version (max 5 min)
+        run: |
+          VERSION="${{ steps.parse.outputs.version }}"
+          for i in $(seq 1 30); do
+            # TestPyPI simple-index — what pip actually reads.
+            # Filename pattern: spirit_platform-<bare version>-py3-none-any.whl
+            URL="https://test.pypi.org/simple/spirit-platform/"
+            if curl -s "$URL" | grep -q "spirit_platform-${VERSION}-"; then
+              echo "TestPyPI has spirit-platform==${VERSION}"
+              exit 0
+            fi
+            echo "Attempt $i/30 — not yet visible on TestPyPI, sleeping 10s"
+            sleep 10
+          done
+          echo "::error::TestPyPI didn't surface spirit-platform==${VERSION} within 5 min"
+          exit 1
+
+  install-matrix:
+    name: Install + runtime smoke on ${{ matrix.os }}
+    needs: wait-for-testpypi
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false   # show every platform's result, not just the first to fail
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            container: ""
+          - os: ubuntu-24.04
+            container: ""
+          - os: ubuntu-latest
+            container: "debian:12"
+          # macOS pending #715 (smoke-test installation on macOS) —
+          # when that issue ships, uncomment:
+          # - os: macos-latest
+          #   container: ""
+
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+
+    steps:
+      - name: Install OS prerequisites (Debian)
+        if: matrix.container == 'debian:12'
+        run: |
+          apt-get update
+          apt-get install -y curl python3 python3-pip python3-venv pipx
+
+      - name: Install pipx (Ubuntu hosted runner)
+        if: matrix.container == ''
+        run: |
+          # ubuntu-22.04 / 24.04 hosted runners have python + pip preinstalled
+          python3 -m pip install --upgrade pipx
+          python3 -m pipx ensurepath
+
+      - name: Install spirit-platform from TestPyPI
+        run: |
+          VERSION="${{ needs.wait-for-testpypi.outputs.version }}"
+          # --pip-args: --no-cache-dir avoids stale cache between matrix runs;
+          # --extra-index-url falls back to real PyPI for the transitive deps
+          # that aren't on TestPyPI (pandas, numpy, etc.)
+          pipx install \
+            --pip-args="--no-cache-dir --extra-index-url https://pypi.org/simple/" \
+            --index-url "https://test.pypi.org/simple/" \
+            "spirit-platform==${VERSION}"
+
+      - name: Verify pipx listing
+        run: |
+          # Ensure path is set up (no-op if already done)
+          export PATH="$HOME/.local/bin:$PATH"
+          pipx list | grep "spirit-platform ${{ needs.wait-for-testpypi.outputs.version }}"
+
+      - name: Smoke — spirit-health
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          spirit-health > health.log 2>&1
+          STATUS=$?
+          set -e
+          cat health.log
+          if grep -q "Traceback\|ModuleNotFoundError" health.log; then
+            echo "::error::spirit-health produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+          # No-instances-configured exits 1 — that's fine on a fresh CI box
+          if [ "$STATUS" -gt 1 ]; then
+            echo "::error::spirit-health exited with unexpected status $STATUS"
+            exit 1
+          fi
+
+      - name: Smoke — spirit-preflight
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          spirit-preflight > preflight.log 2>&1
+          set -e
+          cat preflight.log
+          if grep -q "Traceback\|ModuleNotFoundError" preflight.log; then
+            echo "::error::spirit-preflight produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+
+      - name: Smoke — spirit --mode test for 5 minutes
+        # Longer runtime than the per-PR gate (30s) because RC validation
+        # is the LAST gate before release — we want maximum confidence.
+        # 5 minutes covers Kraken warmup + ingestion of multiple 1m
+        # candles, exercises the main loop more thoroughly.
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          export SPIRIT_TIER=free
+          export SPIRIT_STRATEGY=macd_demo
+          export SPIRIT_INSTANCE=rc-smoke
+          export SPIRIT_PAIRS=XBTUSD
+          set +e
+          timeout --preserve-status 300 spirit --mode test 2>&1 | tee runtime.log
+          STATUS=$?
+          set -e
+
+          if [ "$STATUS" != "124" ] && [ "$STATUS" != "143" ] && [ "$STATUS" != "0" ]; then
+            echo "::error::spirit --mode test exited with $STATUS on ${{ matrix.os }} (expected 124/143/0)"
+            tail -60 runtime.log
+            exit 1
+          fi
+
+          if grep -q "Traceback\|ModuleNotFoundError" runtime.log; then
+            echo "::error::spirit --mode test produced a Python traceback on ${{ matrix.os }}"
+            grep -B2 -A10 "Traceback\|ModuleNotFoundError" runtime.log
+            exit 1
+          fi
+
+          # GREEN LIGHT IS REQUIRED for RC validation (unlike the per-PR
+          # gate where it's a warning). 5 minutes is plenty to reach it.
+          if ! grep -q "GREEN LIGHT" runtime.log; then
+            echo "::error::spirit --mode test did not reach [GREEN LIGHT] within 5 minutes on ${{ matrix.os }}"
+            tail -60 runtime.log
+            exit 1
+          fi
+
+          # Bonus assertion: should see at least one [SPIRIT] alive
+          # heartbeat or 1m candle ingestion. If not, the loop isn't
+          # actually progressing — log a warning.
+          if ! grep -qE "SPIRIT.*alive|KrakenOHLCBuffer.*Warmup complete" runtime.log; then
+            echo "::warning::No alive heartbeat or warmup completion line on ${{ matrix.os }}"
+          fi
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-smoke-${{ matrix.os }}-${{ matrix.container || 'host' }}
+          path: |
+            health.log
+            preflight.log
+            runtime.log
+          retention-days: 14
+
+  rc-verdict:
+    name: RC verdict (require all platforms green)
+    needs: install-matrix
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Aggregate platform results
+        run: |
+          # GitHub's `needs.install-matrix.result` collapses to a single
+          # status across the matrix. 'success' = all platforms passed.
+          # Anything else = at least one platform failed.
+          RESULT="${{ needs.install-matrix.result }}"
+          echo "Install matrix result: $RESULT"
+          case "$RESULT" in
+            success)
+              echo "::notice::RC validation PASSED — all platforms reached GREEN LIGHT"
+              echo "Promote to full release with:  git tag ${GITHUB_REF#refs/tags/v} && git push public ${GITHUB_REF#refs/tags/v}"
+              echo "  (replace -rc* suffix with the full version)"
+              ;;
+            *)
+              echo "::error::RC validation FAILED — see install-matrix job for which platforms failed"
+              echo "DO NOT promote this RC to a full release."
+              exit 1
+              ;;
+          esac
