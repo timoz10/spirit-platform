@@ -23,9 +23,7 @@ python3 -m spirit.setup     # interactive setup wizard
 spirit --mode paper         # start paper trading
 ```
 
-> **macOS, venv-based install, troubleshooting:** see [INSTALL.md](INSTALL.md).
->
-> Note: bare `pip install spirit-platform` will fail on modern Ubuntu/Debian (PEP 668 — externally-managed environment). `pipx` is the recommended path.
+> **Other install paths (venv, etc.) and troubleshooting:** see [INSTALL.md](INSTALL.md).
 
 Run the wizard once (it asks your tier, instance name, and an optional Kraken API key for live trading), pick one of the bundled examples (`sma_crossover` or `macd_demo`) or drop your own file in `~/.spirit/strategies/`, and Spirit starts paper-trading.
 
@@ -87,13 +85,15 @@ src/spirit/
   utils/                   - data providers, OHLC buffer, paper executor, etc.
 ```
 
-Implementation details for the bundled D-Limit indicators, V3 scorer, and risk-gate calibrators live behind the gateway API and ship with Plus and Pro. The framework you see here can run any strategy you write, against any data source you plug in.
+The framework runs any strategy you write against any data source you plug in. Plus and Pro plans add bundled indicators served via the gateway API — the D-Limit suite, V3 confidence scorer, and risk-gate calibrators — without changing the framework you're building against. See [tradebot.live](https://www.tradebot.live) for what each tier unlocks.
 
 ---
 
-## Bring your own exchange
+## Supported exchanges
 
-Spirit ships with a default Kraken adapter. To target a different exchange, implement the `ExchangeProvider` protocol in `src/spirit/exchange/protocol.py` and register it. See `docs/reference/EXCHANGE_PLUGIN_GUIDE.md` for the full guide.
+Spirit includes a Kraken adapter by default. You can write your own by implementing the `ExchangeProvider` protocol in `src/spirit/exchange/protocol.py` — see `docs/reference/EXCHANGE_PLUGIN_GUIDE.md` for the full guide.
+
+We'll be releasing more exchange adapters over time. If there's a specific exchange you'd like us to prioritise, open a GitHub issue and we'll see if we can fit it in.
 
 ---
 

@@ -1,16 +1,19 @@
-"""spirit-health — local liveness check.
+"""spirit-health — Spirit installation diagnostic.
 
-Reads the Free-tier local SQLite (~/.spirit/<instance>/spirit.db) and
-prints a one-screen summary so the operator can answer "is Spirit
-alive?" in one command without tailing logs.
+Auto-discovers every Spirit instance set up on this machine (one subdir
+per instance under ~/.spirit/), reports per-instance state, and marks
+the "active" instance (the one resolved from SPIRIT_INSTANCE / .env
+that `spirit` would use if you typed it right now).
 
-Plus-tier (cloud-backed) state isn't wired here yet — this v2.2.1
-release ships the Free-tier path; the Plus path lands when the
-gateway exposes a self-status endpoint.
+Use cases:
+    spirit-health                   # auto-discover, show all instances
+    spirit-health --instance NAME   # focus on one instance
+    spirit-health --all             # include configured-but-idle instances
+    spirit-health --verbose         # extra detail (schema version, trades)
 
-Usage:
-    python3 -m spirit.health [--instance NAME]
-    spirit-health
+This is a diagnostic tool — it never returns FATAL on "this instance
+isn't set up." Block-startup logic belongs inside `spirit` itself,
+where it knows the user's intent (mode, tier, instance).
 """
 from __future__ import annotations
 
@@ -18,10 +21,19 @@ import argparse
 import os
 import sqlite3
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+
+# Names under ~/.spirit/ that are NOT instances (reserved or shared).
+_RESERVED_DIRS = frozenset({"strategies", "logs", "cache"})
+
+
+# ----------------------------------------------------------------------------
+# Time formatting (shared)
+# ----------------------------------------------------------------------------
 
 def _format_age(dt: Optional[datetime], now: datetime) -> str:
     """Human-readable age string."""
@@ -56,6 +68,40 @@ def _parse_dt(s) -> Optional[datetime]:
         return None
 
 
+# ----------------------------------------------------------------------------
+# Instance discovery + state-gathering
+# ----------------------------------------------------------------------------
+
+@dataclass
+class InstanceInfo:
+    name: str
+    instance_dir: Path
+
+    # File-system signals
+    has_db: bool = False
+    db_path: Optional[Path] = None
+    db_size_bytes: int = 0
+    has_yaml: bool = False
+    has_env: bool = False
+
+    # DB-derived signals (only populated if has_db)
+    last_heartbeat: Optional[datetime] = None
+    heartbeat_status: Optional[str] = None
+    version_stamp: Optional[str] = None
+    last_trade_at: Optional[datetime] = None
+    last_trade_pair: Optional[str] = None
+    last_trade_strategy: Optional[str] = None
+    total_trades: int = 0
+
+    # Computed
+    is_running: bool = False
+    is_active: bool = False
+    is_orphan: bool = False
+
+    # Detail field for verbose mode
+    extra: dict = field(default_factory=dict)
+
+
 def _query_one(db_path: Path, sql: str, params: tuple = ()) -> Optional[dict]:
     """Read-only single-row query. Returns None on any sqlite error."""
     try:
@@ -68,119 +114,326 @@ def _query_one(db_path: Path, sql: str, params: tuple = ()) -> Optional[dict]:
         return None
 
 
-def _check_running() -> tuple[bool, list[int]]:
-    """Detect whether spirit.main is currently running anywhere on this box.
+def _discover_instances(spirit_dir: Path) -> list[InstanceInfo]:
+    """Scan ~/.spirit/*/ for instances. Each non-reserved subdir = one instance."""
+    if not spirit_dir.exists():
+        return []
+    instances = []
+    for d in sorted(spirit_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        if d.name.startswith('.'):
+            continue
+        if d.name in _RESERVED_DIRS:
+            continue
+        instances.append(_gather_info(d))
+    return instances
 
-    spirit-health itself runs as a separate process; the runtime-lock
-    helper excludes the *caller's* PID. So if any other process is
-    running spirit.main, we'll see it here.
+
+def _gather_info(instance_dir: Path, now: Optional[datetime] = None) -> InstanceInfo:
+    """Populate an InstanceInfo from a single ~/.spirit/<instance>/ dir."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    info = InstanceInfo(name=instance_dir.name, instance_dir=instance_dir)
+
+    # File-system signals
+    db = instance_dir / "spirit.db"
+    if db.exists():
+        info.has_db = True
+        info.db_path = db
+        try:
+            info.db_size_bytes = db.stat().st_size
+        except OSError:
+            info.db_size_bytes = 0
+
+    info.has_yaml = (instance_dir / "spirit.yaml").exists()
+    info.has_env = (instance_dir / ".env").exists() or (instance_dir / "env").exists()
+
+    # DB-derived signals
+    if info.has_db:
+        hb = _query_one(
+            db,
+            "SELECT last_heartbeat, status FROM daemon_heartbeats "
+            "WHERE daemon_id = ? ORDER BY last_heartbeat DESC LIMIT 1",
+            (f"spirit:{info.name}",),
+        )
+        if hb:
+            info.last_heartbeat = _parse_dt(hb.get("last_heartbeat"))
+            info.heartbeat_status = hb.get("status")
+            # Running heuristic: heartbeat within the last 2 minutes.
+            # Daemons heartbeat more frequently than this when alive.
+            if info.last_heartbeat is not None:
+                delta = (now - info.last_heartbeat).total_seconds()
+                info.is_running = 0 <= delta < 120
+
+        # Version stamp
+        v = _query_one(
+            db, "SELECT value FROM spirit_state WHERE key = ?",
+            (f"version:{info.name}:arch",),
+        )
+        if v and v.get("value"):
+            # Strip JSON-style quotes that some writers leave on string values
+            info.version_stamp = str(v["value"]).strip().strip('"')
+
+        # Last trade
+        last_trade = _query_one(
+            db,
+            "SELECT entry_timestamp, pair, strategy_name "
+            "FROM strategy_performance ORDER BY entry_timestamp DESC LIMIT 1",
+        )
+        if last_trade and last_trade.get("entry_timestamp"):
+            info.last_trade_at = _parse_dt(last_trade.get("entry_timestamp"))
+            info.last_trade_pair = last_trade.get("pair")
+            info.last_trade_strategy = last_trade.get("strategy_name")
+
+        # Total trade count
+        count_row = _query_one(db, "SELECT COUNT(*) AS n FROM strategy_performance")
+        if count_row:
+            info.total_trades = int(count_row.get("n") or 0)
+
+    # Orphan detection
+    # - Has DB but no config (wizard never wrote here, but data exists)
+    # - Has config but no DB (wizard wrote but never started)
+    info.is_orphan = (
+        (info.has_db and not info.has_yaml and not info.has_env)
+        or (info.has_yaml and not info.has_db)
+    )
+
+    return info
+
+
+def _resolve_active_instance(instances: list[InstanceInfo]) -> Optional[str]:
+    """Find the instance the user would currently start with `spirit`.
+
+    Resolution order:
+      1. SPIRIT_INSTANCE env var (any source)
+      2. spirit.yaml's `instance:` field in a discovered instance dir
+      3. If exactly one configured instance exists, that one
+      4. Otherwise None (user must choose)
     """
+    explicit = os.environ.get("SPIRIT_INSTANCE", "").strip()
+    if explicit:
+        return explicit
+
+    # Try the global config_loader path (it reads env + yaml in the
+    # search-path order spirit.main uses).
     try:
-        from spirit.runtime_lock import detect_other_spirit_processes
+        from spirit.utils.config_loader import get_config
+        cfg_instance = (get_config("SPIRIT_INSTANCE", "") or "").strip()
+        if cfg_instance:
+            return cfg_instance
+    except Exception:
+        pass
+
+    # Fallback: if exactly one instance has both config and DB, treat as active.
+    configured = [i for i in instances if (i.has_yaml or i.has_env) and i.has_db]
+    if len(configured) == 1:
+        return configured[0].name
+    return None
+
+
+# ----------------------------------------------------------------------------
+# Rendering
+# ----------------------------------------------------------------------------
+
+def _format_size(n: int) -> str:
+    """Human-readable file size."""
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 ** 2:
+        return f"{n / 1024:.1f} KB"
+    if n < 1024 ** 3:
+        return f"{n / 1024 ** 2:.1f} MB"
+    return f"{n / 1024 ** 3:.1f} GB"
+
+
+def _state_icon(info: InstanceInfo) -> str:
+    """One-character status icon for the instance summary line."""
+    if info.is_running:
+        return "✓"
+    if info.is_orphan:
+        return "?"
+    return "✗"
+
+
+def _state_label(info: InstanceInfo, is_active: bool) -> str:
+    """One-line status descriptor next to the instance name."""
+    parts = []
+    if is_active:
+        parts.append("active")
+    if info.is_running:
+        parts.append("running")
+    elif info.is_orphan:
+        if info.has_db and not (info.has_yaml or info.has_env):
+            parts.append("orphan — DB without config")
+        elif info.has_yaml and not info.has_db:
+            parts.append("orphan — config without DB")
+    elif info.has_db:
+        parts.append("idle")
+    else:
+        parts.append("not set up")
+    return ", ".join(parts) if parts else "unknown"
+
+
+def _render_instance(info: InstanceInfo, now: datetime, verbose: bool) -> list[str]:
+    """Render one instance block as a list of lines."""
+    lines = []
+    icon = _state_icon(info)
+    label = _state_label(info, info.is_active)
+    lines.append(f"  {icon} {info.name:<12} ({label})")
+
+    if info.is_running and info.last_heartbeat:
+        lines.append(
+            f"      Heartbeat:  {info.last_heartbeat.isoformat()} "
+            f"({_format_age(info.last_heartbeat, now)}, status={info.heartbeat_status or 'unknown'})"
+        )
+
+    if info.has_db:
+        size = _format_size(info.db_size_bytes)
+        lines.append(f"      DB:         {info.db_path} ({size})")
+    else:
+        lines.append(f"      DB:         not found at {info.instance_dir / 'spirit.db'}")
+
+    config_bits = []
+    if info.has_yaml:
+        config_bits.append("spirit.yaml ✓")
+    else:
+        config_bits.append("spirit.yaml ✗")
+    if info.has_env:
+        config_bits.append(".env ✓")
+    else:
+        config_bits.append(".env ✗")
+    lines.append(f"      Config:     {', '.join(config_bits)} (in {info.instance_dir})")
+
+    if info.version_stamp:
+        lines.append(f"      Version:    {info.version_stamp}")
+
+    if info.last_trade_at:
+        pair = info.last_trade_pair or "?"
+        strat = info.last_trade_strategy or "?"
+        lines.append(
+            f"      Last trade: {pair} ({strat}, {_format_age(info.last_trade_at, now)})"
+        )
+    if info.total_trades > 0:
+        lines.append(f"      Trades:     {info.total_trades} total")
+
+    if info.is_orphan:
+        if info.has_db and not (info.has_yaml or info.has_env):
+            lines.append(f"      Repair:     `spirit-setup --instance {info.name}` "
+                         "to associate config, or delete the directory")
+        elif info.has_yaml and not info.has_db:
+            lines.append(f"      Repair:     `spirit --instance {info.name} --mode test` "
+                         "to initialise the DB, or re-run `spirit-setup`")
+
+    if verbose and info.extra:
+        for k, v in info.extra.items():
+            lines.append(f"      {k}: {v}")
+
+    return lines
+
+
+def _render_summary(
+    instances: list[InstanceInfo],
+    active_name: Optional[str],
+    now: datetime,
+    verbose: bool,
+    filter_name: Optional[str] = None,
+) -> str:
+    """Render the full health summary as a string."""
+    try:
+        from spirit import __version__
     except ImportError:
-        return False, []
-    pids = detect_other_spirit_processes()
-    return (len(pids) > 0, pids)
+        __version__ = "unknown"
 
+    out = []
+    out.append("=" * 60)
+    out.append(f"  spirit-platform {__version__}")
+    out.append("=" * 60)
+    out.append("")
 
-def _print_summary(instance: str, db_path: Path, now: datetime) -> None:
-    """Render the summary block. Pure stdout — no side effects."""
-    print(f"Spirit instance: {instance}")
-    print("=" * 60)
+    if not instances:
+        out.append("No Spirit instances found on this machine.")
+        out.append("")
+        out.append("To set up:")
+        out.append("  spirit-setup")
+        out.append("")
+        return "\n".join(out)
 
-    # 1. Process state
-    running, pids = _check_running()
-    if running:
-        print(f"  Process:        running (PID {pids[0]})")
-    else:
-        print(f"  Process:        NOT running")
+    shown = instances
+    if filter_name:
+        shown = [i for i in instances if i.name == filter_name]
+        if not shown:
+            out.append(f"No instance named '{filter_name}' found.")
+            out.append("")
+            out.append("Configured instances on this machine:")
+            for i in instances:
+                out.append(f"  - {i.name}")
+            out.append("")
+            return "\n".join(out)
 
-    # 2. Local DB presence
-    if not db_path.exists():
-        print(f"  Local DB:       not found at {db_path}")
-        print()
-        if not running:
-            print("  Status:         Spirit doesn't appear to be installed for this")
-            print(f"                  instance. Run `python3 -m spirit.setup` to set")
-            print(f"                  up Free tier, or check --instance.")
-        else:
-            print("  Status:         Process running, no local DB — likely Plus tier.")
-            print("                  Plus state lives in the cloud; check the portal.")
-        return
+    # Mark active
+    for i in shown:
+        i.is_active = (i.name == active_name)
 
-    print(f"  Local DB:       {db_path}")
+    out.append("Instances:")
+    for i in shown:
+        out.extend(_render_instance(i, now, verbose))
+        out.append("")
 
-    # 3. Heartbeat — column is `last_heartbeat` per sqlite_schema.sql
-    #    (NOT `updated_at`, which was the original wrong guess + caused
-    #    every health run to silently report "(none)" even when a real
-    #    heartbeat row existed). See test_health_schema_columns_match
-    #    for the regression gate.
-    hb = _query_one(
-        db_path,
-        "SELECT last_heartbeat, status FROM daemon_heartbeats "
-        "WHERE daemon_id = ? ORDER BY last_heartbeat DESC LIMIT 1",
-        (f"spirit:{instance}",),
-    )
-    if hb:
-        last_hb = _parse_dt(hb.get("last_heartbeat"))
-        age_str = _format_age(last_hb, now)
-        status = hb.get("status", "unknown")
-        print(f"  Last heartbeat: {last_hb} ({age_str})")
-        print(f"  Status:         {status}")
-    else:
-        print(f"  Last heartbeat: (none — Spirit may have never run on this box)")
+    # Cross-cutting warnings — only relevant when showing all instances
+    # (when the user filters with --instance, these are noise).
+    if filter_name is None:
+        if active_name and not any(i.name == active_name for i in instances):
+            out.append(
+                f"⚠️  $SPIRIT_INSTANCE='{active_name}' but no matching instance found. "
+                f"Run `spirit-setup --instance {active_name}` to create it."
+            )
+            out.append("")
+        elif active_name is None and len(instances) > 1:
+            out.append(
+                "ℹ️  No active instance resolved. Set SPIRIT_INSTANCE or "
+                "pass --instance NAME to select one."
+            )
+            out.append("")
 
-    # 4. State (last candle, version stamp)
-    for key in (f"version:{instance}:arch", f"version:{instance}:started_at"):
-        row = _query_one(db_path,
-                         "SELECT value FROM spirit_state WHERE key = ?",
-                         (key,))
-        if row:
-            label = key.split(":")[-1].replace("_", " ").title()
-            print(f"  {label}:{' ' * (16 - len(label) - 1)}{row['value']}")
-
-    # 5. Performance — column names match sqlite_schema.sql
-    #    (`pnl_pct`, NOT `pnl_realized` — same column-drift class as the
-    #    `last_heartbeat` fix above. The print below currently shows just
-    #    pair / strategy / age, but selecting pnl_pct keeps it available
-    #    for the next iteration without another schema-drift round.)
-    last_trade = _query_one(
-        db_path,
-        "SELECT entry_timestamp, pair, strategy_name, pnl_pct "
-        "FROM strategy_performance ORDER BY entry_timestamp DESC LIMIT 1",
-    )
-    count_row = _query_one(db_path, "SELECT COUNT(*) AS n FROM strategy_performance")
-    total = (count_row or {}).get("n", 0)
-    if last_trade and last_trade.get("entry_timestamp"):
-        last_ts = _parse_dt(last_trade.get("entry_timestamp"))
-        age_str = _format_age(last_ts, now)
-        pair = last_trade.get("pair") or "?"
-        strat = last_trade.get("strategy_name") or "?"
-        print(f"  Last trade:     {pair} ({strat}, {age_str})")
-    else:
-        print(f"  Last trade:     (none recorded)")
-    print(f"  Total trades:   {total}")
+    return "\n".join(out)
 
 
 def _print_tips() -> None:
-    print()
     print("Tips:")
-    print("  • Logs:         /var/log/spirit/spirit.log  or  journalctl -u spirit")
-    print("  • Spirit is quiet by default — strategies only log on signals.")
-    print("    Periodic [SPIRIT] alive lines appear every 30 min by design.")
-    print("  • Revoke an API key:  https://portal.tradebot.live/keys")
+    print("  • Run a specific instance:   spirit --instance <name> --mode paper")
+    print("  • Set the active instance:   export SPIRIT_INSTANCE=<name>")
+    print("  • Logs (if systemd-managed): journalctl -u spirit")
+    print("  • Diagnostic preflight:      spirit-preflight")
+    print("  • Revoke a gateway API key:  https://portal.tradebot.live/keys")
 
+
+# ----------------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------------
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="spirit-health",
-        description="Print a one-screen Spirit liveness summary "
-                    "(Free-tier local SQLite path).",
+        description="Diagnostic for Spirit installations on this machine. "
+                    "Auto-discovers instances under ~/.spirit/ and reports "
+                    "per-instance state.",
     )
     parser.add_argument(
         "--instance",
-        default=os.environ.get("SPIRIT_INSTANCE", "prod"),
-        help="Instance name (default: $SPIRIT_INSTANCE or 'prod')",
+        default=None,
+        help="Filter to a single instance (default: show all discovered)",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Include orphan/idle instances (default: same — shown for symmetry)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show extra detail per instance",
     )
     parser.add_argument(
         "--no-tips",
@@ -189,18 +442,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    instance = args.instance.strip()
-    if not instance:
-        print("ERROR: --instance is empty (set $SPIRIT_INSTANCE or pass --instance NAME)",
-              file=sys.stderr)
-        return 1
-
     now = datetime.now(timezone.utc)
-    db_path = Path.home() / ".spirit" / instance / "spirit.db"
+    spirit_dir = Path.home() / ".spirit"
+    instances = _discover_instances(spirit_dir)
+    active_name = _resolve_active_instance(instances)
 
-    _print_summary(instance, db_path, now)
+    print(_render_summary(
+        instances, active_name, now, args.verbose,
+        filter_name=args.instance.strip() if args.instance else None,
+    ))
+
     if not args.no_tips:
         _print_tips()
+
+    # Exit code: 0 if at least one instance is running or has a DB,
+    # 1 if nothing's been set up. (Diagnostic tool — not a startup gate.)
+    if not instances:
+        return 1
     return 0
 
 

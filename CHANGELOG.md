@@ -20,6 +20,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 _No unreleased changes yet._
 
 
+## [2.2.3] — 2026-05-18
+
+### Fixed
+
+- **`spirit-health` now finds your installation regardless of instance name.** The v2.2.2.post2 version defaulted to looking for an instance called `prod`, so if your instance was named anything else (e.g. `local` from the setup wizard) the tool reported "Spirit doesn't appear to be installed" even though it was. `spirit-health` now auto-discovers every instance under `~/.spirit/` and shows per-instance state — DB, config, last trade, version stamp — with the active instance (resolved from `SPIRIT_INSTANCE`) clearly marked.
+- **`spirit-preflight` no longer reports FATAL on a working paper-mode setup.** Running the standalone diagnostic with no Kraken keys on the Free tier previously printed misleading FATAL errors even though `spirit --mode paper` worked perfectly. Standalone preflight now runs in diagnostic mode — missing optional keys produce informational warnings, missing required keys (like `SPIRIT_STRATEGY`) still fail. The in-run preflight that gates `spirit --mode live` is unchanged.
+
+### Added
+
+- **"Capabilities enabled" summary** at the bottom of `spirit-preflight` output — answers the question users actually have ("what can this instance do?") with ✓/✗/– markers for paper trading, live trading, and gateway features.
+- **Orphan detection in `spirit-health`** — flags DB-without-config and config-without-DB states with the right repair command for each.
+
+### Changed
+
+- **README copy polish.** Install callout no longer references macOS (unverified at this stage; INSTALL.md is honest about that). D-Limit / V3 scorer / risk-gate callout reframed from "lives behind the gateway" to an upgrade path with a link to `tradebot.live` for tier details. "Bring your own exchange" section renamed to "Supported exchanges" and now invites GitHub issues for exchange-prioritisation requests.
+
+### Notes
+
+This release also adds a 5-phase release engineering process (`docs/RELEASE_ENGINEERING_PROCESS.md`) and three independent CI gates that protect every PyPI publish. Internal/process changes; no behavioural impact for installed users beyond making future releases harder to ship broken.
+
+
 ## [2.2.2] — 2026-05-17
 
 ### Fixed

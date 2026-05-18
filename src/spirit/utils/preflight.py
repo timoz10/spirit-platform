@@ -335,8 +335,17 @@ def _check_strategy_capabilities() -> CheckResult:
     )
 
 
-def _check_exchange_keys() -> CheckResult:
-    """Verify exchange API keys are accessible (generic + legacy fallback)."""
+def _check_exchange_keys(required: bool = True) -> CheckResult:
+    """Verify exchange API keys are accessible (generic + legacy fallback).
+
+    Args:
+        required: When True (in-run preflight for --mode live), missing keys
+            are FATAL — Spirit can't place orders without them. When False
+            (standalone diagnostic), missing keys are WARN — paper-mode works
+            without them, so the user just needs to know live trading is
+            disabled.
+    """
+    severity = 'FATAL' if required else 'WARN'
     try:
         from spirit.exchange.kraken import _load_credential
         key = _load_credential('EXCHANGE_API_KEY', 'KRAKEN_API_KEY')
@@ -345,67 +354,92 @@ def _check_exchange_keys() -> CheckResult:
             return CheckResult(
                 name='exchange_keys',
                 passed=True,
-                severity='FATAL',
-                message='Exchange API keys found',
+                severity=severity,
+                message='Exchange API keys found — live trading enabled',
             )
         missing = []
         if not key:
             missing.append('EXCHANGE_API_KEY (or KRAKEN_API_KEY)')
         if not secret:
             missing.append('EXCHANGE_API_SECRET (or KRAKEN_API_SECRET)')
+        if required:
+            msg = f'Missing exchange keys: {", ".join(missing)}'
+        else:
+            msg = f'Exchange keys not set — live trading disabled (paper mode works). Missing: {", ".join(missing)}'
         return CheckResult(
             name='exchange_keys',
             passed=False,
-            severity='FATAL',
-            message=f'Missing exchange keys: {", ".join(missing)}',
+            severity=severity,
+            message=msg,
         )
     except Exception as e:
         return CheckResult(
             name='exchange_keys',
             passed=False,
-            severity='FATAL',
+            severity=severity,
             message='Failed to check exchange keys',
             detail=str(e),
         )
 
 
-def _check_env_vars(skip_kraken: bool = False, tier: str = "") -> CheckResult:
+def _check_env_vars(skip_kraken: bool = False, tier: str = "", diagnostic: bool = False) -> CheckResult:
     """Verify required environment variables / config values are set.
 
     Free-tier (`tier == 'free'`) skips the SPIRIT_API_KEY requirement —
     Free runs entirely against the local SQLite + direct exchange REST
     and never authenticates against the gateway.
+
+    Args:
+        skip_kraken: Caller already knows Kraken keys aren't needed (e.g.
+            paper/replay mode). KRAKEN_API_KEY is not checked at all.
+        tier: 'free' / 'subscription' / 'pro' / ''. Determines whether
+            SPIRIT_API_KEY is required.
+        diagnostic: When True (standalone preflight), report missing
+            optional keys as WARN with informative messages rather than
+            FATAL. Required keys (SPIRIT_STRATEGY always; SPIRIT_API_KEY
+            for Plus/Pro) remain FATAL even in diagnostic mode.
     """
     from spirit.utils.config_loader import get_config
 
-    # Secrets: must come from env vars (not YAML)
-    secrets: list[str] = []
-    if not skip_kraken:
-        secrets.append('KRAKEN_API_KEY')
-    missing = [v for v in secrets if not os.environ.get(v)]
-    # Also check _FILE variants for Kraken keys (Docker secret pattern)
-    if 'KRAKEN_API_KEY' in missing and os.environ.get('KRAKEN_API_KEY_FILE'):
-        missing.remove('KRAKEN_API_KEY')
+    # SPIRIT_STRATEGY is always required (always FATAL when missing)
+    required_missing: list[str] = []
+    optional_missing: list[str] = []
 
-    # Plus/Pro tiers require a gateway API key. Free tier does not.
+    config_keys = ['SPIRIT_STRATEGY']
+    required_missing += [v for v in config_keys if not get_config(v)]
+
+    # KRAKEN_API_KEY: required only when not skip_kraken AND not diagnostic mode
+    # In diagnostic mode it's a WARN (paper-mode users don't need it)
+    if not skip_kraken:
+        if not os.environ.get('KRAKEN_API_KEY') and not os.environ.get('KRAKEN_API_KEY_FILE'):
+            if diagnostic:
+                optional_missing.append('KRAKEN_API_KEY (live trading disabled)')
+            else:
+                required_missing.append('KRAKEN_API_KEY')
+
+    # SPIRIT_API_KEY: required for Plus/Pro. Free tier skips it entirely
+    # (already filtered out at the call-site for in-run preflight; we
+    # repeat the check here to keep the diagnostic branch self-contained).
     if tier != "free":
         api_key = get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
         if not api_key:
-            missing.append('SPIRIT_API_KEY')
+            required_missing.append('SPIRIT_API_KEY')
 
-    # Config: can come from env var OR YAML
-    config_keys = ['SPIRIT_STRATEGY']
-    missing += [v for v in config_keys if not get_config(v)]
-
-    api_key_count = 0 if tier == "free" else 1
-    total = len(secrets) + len(config_keys) + api_key_count
-    if missing:
+    if required_missing:
         return CheckResult(
             name='env_vars',
             passed=False,
             severity='FATAL',
-            message=f'Missing env vars: {", ".join(missing)}',
+            message=f'Missing required env vars: {", ".join(required_missing)}',
         )
+    if optional_missing:
+        return CheckResult(
+            name='env_vars',
+            passed=False,  # not passing, but not fatal
+            severity='WARN',
+            message=f'Optional env vars not set: {", ".join(optional_missing)}',
+        )
+    total = len(config_keys) + (0 if skip_kraken else 1) + (0 if tier == "free" else 1)
     return CheckResult(
         name='env_vars',
         passed=True,
@@ -456,25 +490,33 @@ def _resolve_tier() -> str:
     return tier
 
 
-def run_preflight(skip_kraken: bool = False, tier: str | None = None) -> PreflightResult:
+def run_preflight(
+    skip_kraken: bool = False,
+    tier: str | None = None,
+    diagnostic: bool = False,
+) -> PreflightResult:
     """
     Run all pre-flight checks. Returns PreflightResult.
 
     FATAL failures mean Spirit should not start.
     WARN failures are logged but do not block startup.
 
-    skip_kraken: If True, skip Kraken key check (e.g. paper/replay mode).
-    tier:        Spirit tier ('free' / 'subscription' / 'pro' / ''). When
-                 None (default), resolved from SPIRIT_TIER env/config.
-                 Free tier skips the gateway connectivity + SPIRIT_API_KEY
-                 checks — Free runs entirely local-plus-exchange-direct
-                 and never reaches the gateway.
+    Args:
+        skip_kraken: If True, skip Kraken key check (e.g. paper/replay mode).
+        tier: Spirit tier ('free' / 'subscription' / 'pro' / ''). When None
+            (default), resolved from SPIRIT_TIER env/config. Free tier skips
+            the gateway connectivity + SPIRIT_API_KEY checks — Free runs
+            entirely local-plus-exchange-direct and never reaches the gateway.
+        diagnostic: When True (standalone `spirit-preflight` console script),
+            run in informational mode — missing optional keys produce WARN
+            instead of FATAL. The user is asking "what's wired up?" not
+            "can I start?". Required keys remain FATAL.
     """
     if tier is None:
         tier = _resolve_tier()
 
     checks = [
-        _check_env_vars(skip_kraken=skip_kraken, tier=tier),
+        _check_env_vars(skip_kraken=skip_kraken, tier=tier, diagnostic=diagnostic),
     ]
 
     # Gateway connectivity is a Plus/Pro concern. Free tier doesn't talk
@@ -491,7 +533,9 @@ def run_preflight(skip_kraken: bool = False, tier: str | None = None) -> Preflig
                 checks.append(_check_strategy_capabilities())
 
     if not skip_kraken:
-        checks.append(_check_exchange_keys())
+        # Diagnostic mode: missing keys are WARN (paper-mode users don't need them).
+        # Startup mode: missing keys are FATAL (would fail on first order).
+        checks.append(_check_exchange_keys(required=not diagnostic))
 
     checks.append(_check_disk_space())
 
@@ -522,22 +566,79 @@ def run_preflight(skip_kraken: bool = False, tier: str | None = None) -> Preflig
     return result
 
 
+def _capabilities_summary(result: PreflightResult, tier: str) -> str:
+    """Render a 'what can this instance actually do?' summary from check results.
+
+    The diagnostic standalone preflight should answer "what's wired up?" not
+    just "what's missing?". This helps a new user understand whether paper
+    mode will work, whether live trading is gated on a missing key, and what
+    gateway features they'd unlock with a Plus/Pro key.
+    """
+    by_name = {c.name: c for c in result.checks}
+    env_passed = by_name.get('env_vars') and by_name['env_vars'].passed
+    exchange_passed = by_name.get('exchange_keys') and by_name['exchange_keys'].passed
+    gateway_passed = (
+        by_name.get('gateway_capabilities')
+        and by_name['gateway_capabilities'].passed
+    )
+
+    lines = ["", "Capabilities enabled:"]
+    # Paper trading needs SPIRIT_STRATEGY (in env_vars) + a usable exchange
+    # data provider (no key required for Kraken public OHLC).
+    if env_passed or (
+        by_name.get('env_vars')
+        and by_name['env_vars'].severity == 'WARN'
+    ):
+        lines.append("  ✓ Paper trading (Free tier, exchange-direct OHLC)")
+    else:
+        lines.append("  ✗ Paper trading (missing SPIRIT_STRATEGY — run `spirit-setup`)")
+
+    # Live trading needs exchange keys.
+    if exchange_passed:
+        lines.append("  ✓ Live trading (exchange keys present)")
+    else:
+        lines.append("  ✗ Live trading (set EXCHANGE_API_KEY + EXCHANGE_API_SECRET)")
+
+    # Gateway features only relevant for Plus/Pro.
+    if tier == "free":
+        lines.append("  – Gateway features (Free tier — not applicable)")
+    elif gateway_passed:
+        lines.append("  ✓ Gateway features (Plus/Pro indicators + scorer + risk gate)")
+    else:
+        lines.append("  ✗ Gateway features (set SPIRIT_API_KEY, get one at portal.tradebot.live)")
+
+    return "\n".join(lines)
+
+
 def main():
-    """CLI entry point for standalone preflight checks."""
+    """CLI entry point for standalone preflight checks.
+
+    Runs in 'diagnostic' mode — informational, missing-but-not-strictly-required
+    keys produce WARN instead of FATAL. For the in-run preflight that
+    actually blocks startup, see `run_preflight()` called from spirit.main.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     )
-    result = run_preflight()
+    result = run_preflight(diagnostic=True)
+    tier = _resolve_tier()
+
     print()
     print("=" * 60)
-    print(f"Pre-flight: {'PASSED' if result.passed else 'FAILED'}")
+    print(f"Pre-flight diagnostic: {'PASSED' if result.passed else 'FAILED'}")
     print(f"  Checks run: {len(result.checks)}")
     print(f"  Passed:     {sum(1 for c in result.checks if c.passed)}")
     print(f"  Warnings:   {len(result.warnings)}")
     print(f"  Fatal:      {len(result.fatal_failures)}")
     print("=" * 60)
+    print(_capabilities_summary(result, tier))
+    print()
 
+    # Diagnostic mode exits 0 unless there's a true FATAL (e.g. SPIRIT_STRATEGY
+    # missing — without that we can't run anything). Missing exchange keys
+    # on Free + paper, missing SPIRIT_API_KEY on Free, etc. are WARN and
+    # exit cleanly.
     if not result.passed:
         raise SystemExit(1)
 
