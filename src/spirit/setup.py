@@ -240,7 +240,7 @@ def _write_yaml(yaml_path: str, values: dict):
 # ---------------------------------------------------------------------------
 
 
-def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
+def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir, *, instance=None):
     """Free-tier branch — local SQLite + direct exchange OHLC.
 
     Writes:
@@ -250,6 +250,11 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
       SPIRIT_API_KEY if user provides one (optional warm-on-ramp; unused
       at v2.2.x but lights up upgrade-path features automatically when
       the same key gets a Plus/Pro tier server-side).
+
+    `instance` is now resolved in main() so per-instance paths
+    (yaml_path / env_path) can be computed before the rerun-detection
+    yaml load. Pre-#733 the wizard re-prompted here against an
+    instance-independent yaml location — that's gone.
     """
     env_values: dict = {}
     yaml_values: dict = {"SPIRIT_TIER": "free"}
@@ -257,15 +262,14 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
     # Load existing yaml so re-runs offer the user's previous answers
     # as defaults. Without this, every prompt reverts to the hardcoded
     # default, and a user who hits Enter expecting to keep their last
-    # choice silently overwrites it. See #700 for the migration UX
-    # followup; this is the minimum-viable fix.
+    # choice silently overwrites it.
     existing = _load_existing_yaml(yaml_path)
     is_rerun = bool(existing)
 
     print()
     print("--- Free tier ---")
     if is_rerun:
-        print(f"  Re-run detected — values from {os.path.basename(yaml_path)}")
+        print(f"  Re-run detected — values from {yaml_path}")
         print("  are offered as the default at each prompt. Hit Enter to keep,")
         print("  or type a new value to change.")
         print()
@@ -279,11 +283,11 @@ def _setup_free_tier(project_root, env_path, yaml_path, yaml_dir):
     print("included on Free — those are Plus / Pro features.")
     print()
 
-    # --- Instance name + SQLite path ---
-    instance = _ask_text(
-        "Instance name (e.g. local, alpha)",
-        existing.get("SPIRIT_INSTANCE", "local"),
-    )
+    # Instance name is resolved in main(); pin it here so per-instance
+    # path resolution stays consistent.
+    if instance is None:
+        # Defensive fallback for older callers / tests.
+        instance = existing.get("SPIRIT_INSTANCE", "local")
     yaml_values["SPIRIT_INSTANCE"] = instance
 
     # Default DB path follows the instance name unless the user previously
@@ -547,7 +551,7 @@ def _offer_csv_backfill(api_url: str, api_key: str, pairs_csv: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
+def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir, *, instance=None):
     """Plus / Pro branch — gateway-backed, requires a TradeBOT API key."""
     env_values: dict = {}
     yaml_values: dict = {}
@@ -588,8 +592,12 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
     else:
         api_url = api_url_choice
 
-    # Auto-detect instance name from API key via /whoami
-    instance = None
+    # Auto-detect instance name from API key via /whoami. If the
+    # gateway reports a different instance from what main() seeded
+    # (i.e. the user typed "alice" but the key is authorised for
+    # "prod"), prefer the gateway's answer — runtime calls will use
+    # the key's instance, so the config has to match.
+    user_typed_instance = instance
     capabilities: list[str] = []
     if api_key:
         try:
@@ -604,18 +612,28 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
-                instance = data.get("instance")
+                detected = data.get("instance")
                 key_name = data.get("name", "")
                 capabilities = list(data.get("capabilities", []))
-                print(f"  Authenticated: {key_name} (instance: {instance})")
+                if detected and detected != user_typed_instance:
+                    print(
+                        f"  Authenticated: {key_name} (gateway instance: "
+                        f"{detected}, overriding '{user_typed_instance}')"
+                    )
+                    instance = detected
+                    # Re-resolve paths so we write into the right place.
+                    yaml_dir, yaml_path, env_path = _instance_paths(instance)
+                else:
+                    print(f"  Authenticated: {key_name} (instance: {detected or instance})")
+                    if detected:
+                        instance = detected
         except Exception as e:
             print(f"  Could not reach gateway: {e}")
+            print(f"  Keeping instance name '{instance}' from earlier.")
 
     if not instance:
-        instance = _ask_text(
-            "Instance name (e.g. prod, canary, alice)",
-            existing.get("SPIRIT_INSTANCE", "prod"),
-        )
+        # Defensive fallback for older callers / tests.
+        instance = existing.get("SPIRIT_INSTANCE", "prod")
 
     yaml_values["SPIRIT_API_URL"] = api_url
     yaml_values["SPIRIT_INSTANCE"] = instance
@@ -697,9 +715,13 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
     print("  Mode:     paper          (use --mode live when ready)")
     print()
     print("To start Spirit:")
-    print(f"  cd {project_root}")
-    print(f"  [ -f .env ] && set -a && source .env && set +a")
-    print(f"  PYTHONPATH=src python3 -m spirit.main --mode paper --no-pause")
+    print(f"  export SPIRIT_INSTANCE={instance}")
+    print(f"  spirit --mode paper")
+    print()
+    print("Or just `spirit --mode paper` — it picks up the active instance")
+    print("from ~/.spirit/<instance>/.env automatically. Verify with:")
+    print(f"  spirit-health")
+    print(f"  spirit-preflight")
     print()
 
 
@@ -708,24 +730,67 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir):
 # ---------------------------------------------------------------------------
 
 
+def _instance_paths(instance: str) -> tuple[str, str, str]:
+    """Resolve the canonical per-instance file paths.
+
+    All Spirit config lives under ~/.spirit/<instance>/ — one directory
+    per instance, never anywhere else. See docs/reference/MODULE_CONTRACTS.md
+    for the resolution contract; the earlier "walk up from __file__"
+    approach silently wrote into the pipx venv (#733).
+
+    Returns (yaml_dir, yaml_path, env_path).
+    """
+    spirit_home = os.path.join(os.path.expanduser("~"), ".spirit", instance)
+    yaml_path = os.path.join(spirit_home, "spirit.yaml")
+    env_path = os.path.join(spirit_home, ".env")
+    return spirit_home, yaml_path, env_path
+
+
+def _scan_existing_instances() -> list[str]:
+    """Return the names of all directories currently under ~/.spirit/.
+
+    Used to offer a sensible default when the user re-runs the wizard:
+    if exactly one instance already exists, that's almost certainly the
+    one they want to reconfigure.
+    """
+    spirit_root = os.path.join(os.path.expanduser("~"), ".spirit")
+    if not os.path.isdir(spirit_root):
+        return []
+    return sorted([
+        d for d in os.listdir(spirit_root)
+        if os.path.isdir(os.path.join(spirit_root, d)) and not d.startswith(".")
+    ])
+
+
 def main():
     print()
     print("=" * 60)
     print("  Spirit First-Run Setup")
     print("=" * 60)
     print()
-    print("This wizard configures Spirit for first use.")
-    print("It writes config/spirit.yaml and .env in the project root.")
+    print("This wizard configures a Spirit instance under ~/.spirit/<instance>/")
+    print("(spirit.yaml + .env land there — one directory per instance).")
     print()
 
-    # Find project root (where config/ and .env live)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
-    env_path = os.path.join(project_root, ".env")
-    yaml_dir = os.path.join(project_root, "config")
-    yaml_path = os.path.join(yaml_dir, "spirit.yaml")
+    # Pick the default instance name. If we find exactly one existing
+    # instance under ~/.spirit/, offer that — it's almost certainly the
+    # one the user wants to reconfigure. Otherwise default to "local".
+    existing_instances = _scan_existing_instances()
+    if len(existing_instances) == 1:
+        instance_default = existing_instances[0]
+    else:
+        instance_default = "local"
 
-    print(f"Project root: {project_root}")
+    instance = _ask_text(
+        "Instance name (e.g. local, alpha, prod)",
+        instance_default,
+    )
+    yaml_dir, yaml_path, env_path = _instance_paths(instance)
+
+    print()
+    print(f"Configuration files for instance '{instance}' will be written to:")
+    print(f"  {yaml_path}")
+    print(f"  {env_path}")
     print()
 
     # --- Tier selection ---
@@ -739,9 +804,12 @@ def main():
         ],
         default_value="paid",
     )
+    # project_root is kept for downstream "next steps" output only;
+    # nothing reads it after that.
+    project_root = yaml_dir
     if tier == "free":
-        return _setup_free_tier(project_root, env_path, yaml_path, yaml_dir)
-    return _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir)
+        return _setup_free_tier(project_root, env_path, yaml_path, yaml_dir, instance=instance)
+    return _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir, instance=instance)
 
 
 if __name__ == "__main__":

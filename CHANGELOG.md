@@ -20,12 +20,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 _No unreleased changes yet._
 
 
-## [2.2.3] — 2026-05-18
+## [2.2.3] — 2026-05-19
 
 ### Fixed
 
+- **`spirit-setup` now writes to `~/.spirit/<instance>/`, not into the install tree.** Pre-#733 the wizard computed its write target as `<setup.py-location>/../../config/spirit.yaml`, which on pipx installs resolved to inside the venv directory (e.g. `~/.local/share/pipx/venvs/spirit-platform/lib/python3.X/config/spirit.yaml`). That file survived `rm -rf ~/.spirit/`, survived `pipx upgrade`, and was silently read by every later `spirit-preflight` / `spirit-health` invocation — making fresh boxes look configured when they weren't. (#733)
+- **`spirit.utils.config_loader` no longer walks up parent directories looking for YAML.** Resolution is now strictly `~/.spirit/$SPIRIT_INSTANCE/spirit.yaml` (or `{}` when `SPIRIT_INSTANCE` is unset). No filesystem-search fallback, no `<__file__>/../config/...` candidates. Same fix applied to `spirit.logger`'s instance-name resolution. (#733)
 - **`spirit-health` now finds your installation regardless of instance name.** The v2.2.2.post2 version defaulted to looking for an instance called `prod`, so if your instance was named anything else (e.g. `local` from the setup wizard) the tool reported "Spirit doesn't appear to be installed" even though it was. `spirit-health` now auto-discovers every instance under `~/.spirit/` and shows per-instance state — DB, config, last trade, version stamp — with the active instance (resolved from `SPIRIT_INSTANCE`) clearly marked.
 - **`spirit-preflight` no longer reports FATAL on a working paper-mode setup.** Running the standalone diagnostic with no Kraken keys on the Free tier previously printed misleading FATAL errors even though `spirit --mode paper` worked perfectly. Standalone preflight now runs in diagnostic mode — missing optional keys produce informational warnings, missing required keys (like `SPIRIT_STRATEGY`) still fail. The in-run preflight that gates `spirit --mode live` is unchanged.
+
+### Upgrade notes
+
+If you ran `spirit-setup` from a pre-#733 wheel (v2.2.2.post2 or earlier), a stale `spirit.yaml` may exist inside your pipx venv at `~/.local/share/pipx/venvs/spirit-platform/lib/python3.X/config/spirit.yaml`. v2.2.3 ignores that file and warns about it on first run; you can safely `rm` it. The CI gate (rc-validation.yml's upgrade-matrix) now asserts the wizard never writes there.
 
 ### Contract changes
 

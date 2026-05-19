@@ -48,6 +48,68 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build
 
+      - name: Compute wheel version from tag
+        id: wheel_version
+        run: |
+          # The tag is the source of truth for what we publish. The
+          # version on disk in pyproject.toml.public stays at the bare
+          # X.Y.Z so daily dev / local builds produce predictable
+          # filenames; the published wheel takes its version from the tag.
+          #
+          # Mapping (PEP 440 normalised):
+          #   v2.2.3-rc1   → wheel version 2.2.3rc1   → routes to TestPyPI
+          #   v2.2.3-rc2   → wheel version 2.2.3rc2   → routes to TestPyPI
+          #   v2.2.3-test1 → wheel version 2.2.3.dev1 → routes to TestPyPI
+          #   v2.2.3       → wheel version 2.2.3      → routes to real PyPI
+          #
+          # Each RC gets a distinct wheel filename so TestPyPI accepts
+          # them without manual deletion between iterations.
+          # Closes #728.
+          TAG="${GITHUB_REF#refs/tags/v}"
+          # Strip the dash before rc/test — PEP 440 normalises dashes out.
+          # (v2.2.3-rc1 → 2.2.3rc1, not 2.2.3-rc1 which pip would reject.)
+          WHEEL_VERSION="${TAG/-rc/rc}"
+          WHEEL_VERSION="${WHEEL_VERSION/-test/.dev}"
+          echo "version=${WHEEL_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Tag: v${TAG}  →  wheel version: ${WHEEL_VERSION}"
+
+      - name: Inject wheel version into pyproject
+        run: |
+          # In-place rewrite — the checkout is ephemeral, we never
+          # commit this back. On the public mirror the file is already
+          # renamed to pyproject.toml by git-filter-repo; on the private
+          # repo (in case anyone tags there) it's still pyproject.toml.public.
+          VERSION="${{ steps.wheel_version.outputs.version }}"
+          if [ -f pyproject.toml ]; then
+              TARGET=pyproject.toml
+          elif [ -f pyproject.toml.public ]; then
+              TARGET=pyproject.toml.public
+          else
+              echo "::error::neither pyproject.toml nor pyproject.toml.public found"
+              exit 1
+          fi
+          echo "Rewriting ${TARGET} version → ${VERSION}"
+          python3 -c "
+          import re, pathlib
+          p = pathlib.Path('${TARGET}')
+          src = p.read_text()
+          new = re.sub(
+              r'^version\s*=\s*\"[^\"]*\"',
+              f'version = \"${VERSION}\"',
+              src,
+              count=1,
+              flags=re.M,
+          )
+          if new == src:
+              raise SystemExit('::error::failed to inject version — pyproject layout changed?')
+          p.write_text(new)
+          "
+          grep '^version = ' "${TARGET}"
+          # Sync src/spirit/__init__.py for consistency — the wheel reads
+          # version from pyproject; this keeps __version__ in lockstep.
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/spirit/__init__.py
+          grep '^__version__' src/spirit/__init__.py
+
       - name: Build distributions
         run: python -m build
 
