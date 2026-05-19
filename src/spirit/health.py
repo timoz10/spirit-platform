@@ -287,8 +287,14 @@ def _state_icon(info: InstanceInfo) -> str:
     """One-character status icon for the instance summary line."""
     if info.is_running:
         return "✓"
-    if info.is_orphan:
+    if info.is_orphan and info.has_db and not (info.has_yaml or info.has_env):
+        # True orphan — DB exists but no config. Old install, configuration
+        # was deleted. User intervention needed.
         return "?"
+    if info.is_orphan and info.has_yaml and not info.has_db:
+        # "Configured, not yet started" — fresh wizard output. Normal
+        # transient state, not broken.
+        return "○"
     return "✗"
 
 
@@ -303,7 +309,8 @@ def _state_label(info: InstanceInfo, is_active: bool) -> str:
         if info.has_db and not (info.has_yaml or info.has_env):
             parts.append("orphan — DB without config")
         elif info.has_yaml and not info.has_db:
-            parts.append("orphan — config without DB")
+            # Fresh wizard output, never started — not "orphan", just unstarted.
+            parts.append("configured, not yet started")
     elif info.has_db:
         parts.append("idle")
     else:
@@ -355,11 +362,19 @@ def _render_instance(info: InstanceInfo, now: datetime, verbose: bool) -> list[s
 
     if info.is_orphan:
         if info.has_db and not (info.has_yaml or info.has_env):
-            lines.append(f"      Repair:     `spirit-setup --instance {info.name}` "
-                         "to associate config, or delete the directory")
+            # `spirit-setup` doesn't take `--instance` post-#733 — the
+            # wizard prompts for it. The hint is "re-run setup and
+            # choose this instance name."
+            lines.append(f"      Repair:     re-run `spirit-setup` and choose "
+                         f"instance name '{info.name}', or delete the directory")
         elif info.has_yaml and not info.has_db:
-            lines.append(f"      Repair:     `spirit --instance {info.name} --mode test` "
-                         "to initialise the DB, or re-run `spirit-setup`")
+            # Spirit doesn't take `--instance` either — the active
+            # instance comes from SPIRIT_INSTANCE env or the single-dir
+            # autodetect. `--mode paper` (not `test`) is the canonical
+            # first-run mode that initialises the local DB.
+            lines.append(f"      Start:      `SPIRIT_INSTANCE={info.name} "
+                         f"spirit --mode paper` to initialise this instance, "
+                         f"or just `spirit --mode paper` if it's the only one")
 
     if verbose and info.extra:
         for k, v in info.extra.items():

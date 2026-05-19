@@ -17,23 +17,37 @@ from spirit.config import LOGGING_LEVEL, LOG_FILE
 
 
 def _resolve_instance() -> str:
-    """Read SPIRIT_INSTANCE from env. Returns 'no-instance' when unset.
+    """Return the instance name for log prefixes.
 
-    Pre-#733 this function walked up directories from `__file__` looking
-    for a `config/spirit.yaml` — which on pipx installs resolved to a
-    file inside the venv directory written by a buggy spirit-setup,
-    silently overriding the user's actual instance. See
-    docs/reference/MODULE_CONTRACTS.md for the resolution contract.
+    Resolution order (mirrors `config_loader.resolve_active_instance()`):
 
-    The logger uses the instance name only as a display prefix in log
-    lines; it does NOT read per-instance YAML to find it. If the user
-    needs the instance to appear in logs, set SPIRIT_INSTANCE explicitly
-    (the wizard writes this into ~/.spirit/<instance>/.env, and any
-    sensible launcher sources that file before invoking spirit).
+      1. `SPIRIT_INSTANCE` env var (any value).
+      2. If env is unset and exactly one non-hidden directory lives
+         under `~/.spirit/`, use that name (single-instance autodetect).
+      3. Otherwise the literal sentinel `no-instance`.
+
+    Pre-#733 this walked up `__file__` directories looking for a YAML —
+    which on pipx installs found a file inside the venv. The new
+    behaviour matches the config-loader contract: env first, single-dir
+    autodetect second, sentinel last. See `docs/reference/MODULE_CONTRACTS.md`.
+
+    We don't import `spirit.utils.config_loader` to avoid a circular
+    dependency (`spirit.config` -> `spirit.logger` -> `spirit.config`).
+    The autodetect logic is short enough to inline.
     """
     val = os.environ.get('SPIRIT_INSTANCE', '').strip()
     if val:
         return val
+    spirit_root = os.path.join(os.path.expanduser('~'), '.spirit')
+    try:
+        candidates = [
+            d for d in os.listdir(spirit_root)
+            if not d.startswith('.') and os.path.isdir(os.path.join(spirit_root, d))
+        ]
+    except (FileNotFoundError, NotADirectoryError):
+        return 'no-instance'
+    if len(candidates) == 1:
+        return candidates[0]
     return 'no-instance'
 
 

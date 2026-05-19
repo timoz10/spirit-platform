@@ -44,9 +44,16 @@ def _ask_text(label: str, default: str = "") -> str:
         if ans is None:
             sys.exit(1)
         return ans.strip() or default
-    # Fallback — plain input(), default-on-blank.
+    # Fallback — plain input(), default-on-blank, EOF-tolerant.
     display = f"{label} [{default}]: " if default else f"{label}: "
-    return (input(display).strip()) or default
+    try:
+        return (input(display).strip()) or default
+    except EOFError:
+        # Piped stdin ran out — take the default. Stops `--help` from
+        # crashing with a traceback when argparse hasn't been wired up
+        # yet, and tolerates short stdin pipes in scripted installs.
+        print(display + f"(EOF — using default '{default}')")
+        return default
 
 
 def _ask_password(label: str) -> str:
@@ -58,14 +65,20 @@ def _ask_password(label: str) -> str:
         if ans is None:
             sys.exit(1)
         return ans.strip()
-    # Fallback — getpass when stdin is a real tty (rare in non-interactive
-    # mode but possible in some CI shells); plain input() otherwise.
-    import getpass
+    # Non-TTY (piped stdin, CI). Skip getpass entirely — calling it on a
+    # non-tty fd produces noisy `GetPassWarning: Can not control echo on
+    # the terminal` lines that pollute scripted-install logs without
+    # actually masking anything. Just use input(); the caller is
+    # responsible for trusting the stdin source.
     display = f"{label}: "
     try:
-        return getpass.getpass(display + "(input hidden) ").strip()
-    except (EOFError, OSError):
         return input(display).strip()
+    except EOFError:
+        # Piped stdin ran out — treat as "user left blank" rather than
+        # crashing with a traceback. Wizard's downstream logic handles
+        # empty secrets (paper-mode still works).
+        print(display + "(empty)")
+        return ""
 
 
 def _ask_select(label: str, choices: Sequence[tuple[str, str]],
@@ -763,6 +776,33 @@ def _scan_existing_instances() -> list[str]:
 
 
 def main():
+    # argparse must run BEFORE any wizard prompts, otherwise --help would
+    # fall through to the interactive flow and block on input. We don't
+    # take any real options yet, but parsing here gives users a working
+    # --help and rejects unknown flags cleanly.
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="spirit-setup",
+        description=(
+            "Interactive first-run setup wizard for Spirit. Writes "
+            "spirit.yaml and .env under ~/.spirit/<instance>/. Tier (Free "
+            "vs Plus/Pro), instance name, strategy, and exchange/API keys "
+            "are asked interactively. Re-run any time to reconfigure."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  spirit-setup                     # run the wizard\n"
+            "  printf 'mybox\\nfree\\n...' | spirit-setup   "
+            "# scripted, stdin-driven\n"
+            "\n"
+            "After setup, run `spirit-health` to verify the instance, then "
+            "`spirit --mode paper` to start paper trading. "
+            "Docs: https://www.tradebot.live"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.parse_args()   # consumes argv; errors on unknown flags
+
     print()
     print("=" * 60)
     print("  Spirit First-Run Setup")

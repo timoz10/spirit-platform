@@ -410,6 +410,63 @@ jobs:
           fi
           echo "  ✓ no new spirit.yaml created inside the venv"
 
+      - name: spirit-preflight autodetects the lone instance (#733 post-setup)
+        run: |
+          # Post-setup with exactly one ~/.spirit/<name>/ dir on the box,
+          # spirit-preflight with NO SPIRIT_INSTANCE env should autodetect
+          # the instance and report rc=0 (RC_DIAGNOSTIC_OK).
+          #
+          # rc2 reported by Tim: preflight stayed in [no-instance] mode and
+          # returned rc=1 because get_config didn't autodetect the lone
+          # ~/.spirit/setup-test/ dir. Fix landed in config_loader's
+          # resolve_active_instance() and logger._resolve_instance().
+          # This step is the regression gate.
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # Make sure no other instances exist that would break the autodetect.
+          ls -la "$HOME/.spirit/"
+          INSTANCE_COUNT=$(find "$HOME/.spirit/" -maxdepth 1 -mindepth 1 -type d -not -name '.*' | wc -l)
+          if [ "$INSTANCE_COUNT" -ne 1 ]; then
+            echo "::error::expected exactly 1 instance dir for autodetect test, found $INSTANCE_COUNT"
+            exit 1
+          fi
+
+          # Unset SPIRIT_INSTANCE explicitly — the wizard may have set it
+          # in the current shell via .env, but autodetect must work even
+          # if the user opens a fresh terminal.
+          set +e
+          unset SPIRIT_INSTANCE
+          spirit-preflight > autodetect-preflight.log 2>&1
+          STATUS=$?
+          set -e
+          cat autodetect-preflight.log
+
+          if grep -q "Traceback\|ModuleNotFoundError" autodetect-preflight.log; then
+            echo "::error::spirit-preflight crashed during autodetect"
+            exit 1
+          fi
+
+          # Free tier + sma_crossover from the wizard → all required env
+          # vars resolved → rc=0 (RC_DIAGNOSTIC_OK).
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::spirit-preflight rc=${STATUS} post-setup, expected 0 (autodetect should pick up the lone instance)"
+            echo "::error::See docs/reference/MODULE_CONTRACTS.md for the contract"
+            exit 1
+          fi
+          echo "  ✓ spirit-preflight autodetected the instance and returned rc=0"
+
+          # And the log prefix should reflect the autodetected name,
+          # not the [no-instance] sentinel.
+          if grep -q "\[no-instance\]" autodetect-preflight.log; then
+            echo "::error::log prefix shows [no-instance] — autodetect didn't reach the logger"
+            exit 1
+          fi
+          if ! grep -q "\[setup-test\]" autodetect-preflight.log; then
+            echo "::error::log prefix doesn't show [setup-test] — logger autodetect broken"
+            exit 1
+          fi
+          echo "  ✓ log prefix shows [setup-test] — logger autodetect works"
+
       - name: Upload upgrade logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -419,6 +476,7 @@ jobs:
             pre-health.log
             post-health.log
             post-preflight.log
+            autodetect-preflight.log
           retention-days: 14
 
   rc-verdict:
