@@ -27,6 +27,29 @@ _No unreleased changes yet._
 - **`spirit-health` now finds your installation regardless of instance name.** The v2.2.2.post2 version defaulted to looking for an instance called `prod`, so if your instance was named anything else (e.g. `local` from the setup wizard) the tool reported "Spirit doesn't appear to be installed" even though it was. `spirit-health` now auto-discovers every instance under `~/.spirit/` and shows per-instance state — DB, config, last trade, version stamp — with the active instance (resolved from `SPIRIT_INSTANCE`) clearly marked.
 - **`spirit-preflight` no longer reports FATAL on a working paper-mode setup.** Running the standalone diagnostic with no Kraken keys on the Free tier previously printed misleading FATAL errors even though `spirit --mode paper` worked perfectly. Standalone preflight now runs in diagnostic mode — missing optional keys produce informational warnings, missing required keys (like `SPIRIT_STRATEGY`) still fail. The in-run preflight that gates `spirit --mode live` is unchanged.
 
+### Contract changes
+
+`spirit-health` and `spirit-preflight` now publish formal exit-code contracts. Monitoring scripts that wire either tool into Datadog / Nagios / etc. SHOULD check against this matrix; the codes are stable from v2.2.3 onwards and any change is a MAJOR version bump.
+
+**`spirit-health` (4 states):**
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| 0 | `RC_HEALTHY` | At least one instance has a heartbeat within the running threshold |
+| 1 | `RC_NO_INSTANCES` | No instances configured (fresh box — informational, not an error) |
+| 2 | `RC_DEGRADED` | Instances exist but none has a recent heartbeat (stale / orphan / stopped) |
+| 3 | `RC_INTERNAL_ERROR` | Uncaught exception inside the tool itself |
+
+**`spirit-preflight` (3 states):**
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| 0 | `RC_DIAGNOSTIC_OK` | No FATAL checks (paper-mode would start) |
+| 1 | `RC_DIAGNOSTIC_BLOCKING` | At least one FATAL (paper-mode would not start) |
+| 2 | `RC_INTERNAL_ERROR` | Uncaught exception inside the tool itself |
+
+Pinned by `tests/test_spirit_health_contract.py` + `tests/test_spirit_preflight_contract.py`. Enforced by both `.github/workflows/publish.yml` and `.github/workflows/rc-validation.yml` against the exact expected codes for the CI environment. Full design at `docs/reference/MODULE_CONTRACTS.md`.
+
 ### Added
 
 - **"Capabilities enabled" summary** at the bottom of `spirit-preflight` output — answers the question users actually have ("what can this instance do?") with ✓/✗/– markers for paper trading, live trading, and gateway features.
