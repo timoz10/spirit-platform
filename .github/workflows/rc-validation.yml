@@ -45,20 +45,21 @@ jobs:
         run: |
           # github.ref is refs/tags/vX.Y.Z-rcN (e.g. v2.2.3-rc1).
           #
-          # Current convention (matches v2.2.1 launch + publish.yml as-built):
-          # the WHEEL VERSION is the bare X.Y.Z — the -rcN suffix on the tag
-          # is used only by publish.yml to route to TestPyPI vs PyPI. The
-          # wheel filename comes from pyproject.toml.public, which holds the
-          # bare version. So `v2.2.3-rc1` and `v2.2.3` both produce
-          # `spirit_platform-2.2.3-...whl`; the only difference is which
-          # index it lands on.
+          # Multi-RC convention (since #728 closed): the wheel version
+          # carries the PEP 440 rc suffix.
           #
-          # Trade-off: single-RC only — a failed rc1 can't be replaced by
-          # rc2 because TestPyPI rejects same-version re-uploads. Tracked
-          # at #728 for the PEP-440-RC-suffix migration.
+          #   v2.2.3-rc1   → wheel version 2.2.3rc1   → TestPyPI
+          #   v2.2.3-rc2   → wheel version 2.2.3rc2   → TestPyPI
+          #   v2.2.3-test1 → wheel version 2.2.3.dev1 → TestPyPI
+          #   v2.2.3       → wheel version 2.2.3      → real PyPI
+          #
+          # Each RC has a distinct wheel filename so iterating doesn't
+          # require manual TestPyPI cleanup.
           TAG="${GITHUB_REF#refs/tags/v}"
-          WHEEL_VERSION="${TAG%-rc*}"
-          WHEEL_VERSION="${WHEEL_VERSION%-test*}"
+          # Mirror publish.yml's normalisation: strip the dash before
+          # rc/test, since PEP 440 expects no dash.
+          WHEEL_VERSION="${TAG/-rc/rc}"
+          WHEEL_VERSION="${WHEEL_VERSION/-test/.dev}"
           echo "version=${WHEEL_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Tag is v${TAG}, wheel version is ${WHEEL_VERSION}"
@@ -120,10 +121,11 @@ jobs:
         run: |
           VERSION="${{ needs.wait-for-testpypi.outputs.version }}"
           # --pip-args: --no-cache-dir avoids stale cache between matrix runs;
-          # --extra-index-url falls back to real PyPI for the transitive deps
-          # that aren't on TestPyPI (pandas, numpy, etc.)
+          #             --pre allows the rc-suffixed version to satisfy the spec;
+          #             --extra-index-url falls back to real PyPI for the
+          #             transitive deps that aren't on TestPyPI (pandas, etc.)
           pipx install \
-            --pip-args="--no-cache-dir --extra-index-url https://pypi.org/simple/" \
+            --pip-args="--no-cache-dir --pre --extra-index-url https://pypi.org/simple/" \
             --index-url "https://test.pypi.org/simple/" \
             "spirit-platform==${VERSION}"
 
@@ -362,6 +364,51 @@ jobs:
             echo "::error::spirit-preflight crashed after upgrade"
             exit 1
           fi
+
+      - name: spirit-setup writes to ~/.spirit/, not into the venv (#733 regression gate)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # Take a snapshot of any pre-existing files inside the pipx venv's
+          # lib tree so we can diff after spirit-setup runs. If setup writes
+          # ANYTHING new under the venv (the pre-#733 bug), this set will
+          # be non-empty.
+          VENV_LIB=$(pipx list --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['venvs']['spirit-platform']['metadata']['main_package']['app_paths'][0].rsplit('/bin/', 1)[0] + '/lib')")
+          echo "Pipx venv lib tree: ${VENV_LIB}"
+          find "$VENV_LIB" -name "spirit.yaml" 2>/dev/null > /tmp/before-setup-yamls.txt || true
+          echo "Pre-setup spirit.yaml files inside venv:"
+          cat /tmp/before-setup-yamls.txt || echo "  (none)"
+
+          # Drive spirit-setup non-interactively via stdin. The wizard
+          # falls back to plain input() when stdin isn't a TTY.
+          # Sequence: instance name 'setup-test', tier 'free', accept all
+          # other defaults (empty lines = take default). Free-tier prompts
+          # are roughly: instance, sqlite path, api key (optional), exchange,
+          # exchange keys, pairs, strategy, mode.
+          printf 'setup-test\nfree\n\n\n\n\n\n\n\n\n' | timeout 30 spirit-setup || true
+
+          # Now verify two things:
+          #
+          # 1. The wizard wrote spirit.yaml to ~/.spirit/setup-test/
+          if [ ! -f "$HOME/.spirit/setup-test/spirit.yaml" ]; then
+            echo "::error::spirit-setup did not write to ~/.spirit/setup-test/spirit.yaml"
+            echo "::error::Contents of \$HOME/.spirit/:"
+            ls -la "$HOME/.spirit/" || true
+            exit 1
+          fi
+          echo "  ✓ wizard wrote to ~/.spirit/setup-test/spirit.yaml"
+
+          # 2. The wizard did NOT write anything new inside the venv
+          find "$VENV_LIB" -name "spirit.yaml" 2>/dev/null > /tmp/after-setup-yamls.txt || true
+          if ! diff -q /tmp/before-setup-yamls.txt /tmp/after-setup-yamls.txt > /dev/null; then
+            echo "::error::spirit-setup wrote new spirit.yaml file(s) inside the venv — #733 has regressed"
+            echo "::error::Before:"
+            cat /tmp/before-setup-yamls.txt
+            echo "::error::After:"
+            cat /tmp/after-setup-yamls.txt
+            exit 1
+          fi
+          echo "  ✓ no new spirit.yaml created inside the venv"
 
       - name: Upload upgrade logs
         if: always()
