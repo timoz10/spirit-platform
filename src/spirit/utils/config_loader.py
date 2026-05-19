@@ -91,6 +91,72 @@ def _resolve_yaml_path() -> Optional[str]:
     return os.path.join(os.path.expanduser("~"), ".spirit", instance, "spirit.yaml")
 
 
+def _resolve_env_path() -> Optional[str]:
+    """Return the per-instance .env path, or None when no instance."""
+    instance = resolve_active_instance()
+    if not instance:
+        return None
+    return os.path.join(os.path.expanduser("~"), ".spirit", instance, ".env")
+
+
+_env_file_loaded = False
+
+
+def _load_env_file() -> None:
+    """Read `~/.spirit/<instance>/.env` once per process into `os.environ`.
+
+    The setup wizard writes secrets (SPIRIT_API_KEY, EXCHANGE_API_KEY, etc.)
+    here on the assumption that spirit's diagnostic and runtime CLIs pick
+    them up automatically — which they didn't pre-rc4. Tim's rc3 install
+    test reported this as Bug A: "edit ~/.spirit/test/.env, re-run
+    spirit-preflight" silently failed because preflight never read the
+    file. Same flaw bit `spirit --mode paper` on paid tier.
+
+    Format: KEY=value lines, one per row. Matches what setup.py writes.
+    No quoting / escaping — caller is responsible for keeping values
+    one-line and shell-safe.
+
+    Precedence: an env var ALREADY set in the process environment wins
+    over the .env value. That preserves the override convention every
+    dotenv library uses; explicit-shell-export still trumps file.
+    """
+    global _env_file_loaded
+    if _env_file_loaded:
+        return
+    _env_file_loaded = True
+
+    env_path = _resolve_env_path()
+    if env_path is None or not os.path.exists(env_path):
+        return
+
+    try:
+        with open(env_path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if not key or key in os.environ:
+                    # Existing env var wins (standard dotenv convention).
+                    continue
+                # Strip optional surrounding quotes — the wizard doesn't
+                # quote, but users editing by hand sometimes do.
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                os.environ[key] = value
+    except OSError:
+        # Don't crash if the .env exists but is unreadable — log a hint
+        # and proceed with whatever's already in env.
+        import sys
+        sys.stderr.write(
+            f"spirit: warning — could not read {env_path}; continuing with current environment\n"
+        )
+
+
 def _detect_stale_yaml() -> Optional[str]:
     """Return the path of a stale pre-#733 spirit.yaml if one is found.
 
@@ -146,8 +212,10 @@ def _load_yaml() -> dict:
     inside a long-running process (rare, but legitimate in tests)
     triggers a fresh read.
 
-    First call in the process also probes for and warns about pre-#733
-    stale config.
+    First call in the process also:
+      - probes for and warns about pre-#733 stale config
+      - loads `~/.spirit/<instance>/.env` into `os.environ` (Bug A,
+        documented Pro-flip path required this)
     """
     global _config_cache, _cache_key, _stale_check_done
 
@@ -158,6 +226,11 @@ def _load_yaml() -> dict:
     if not _stale_check_done:
         _stale_check_done = True
         _maybe_warn_stale(_detect_stale_yaml())
+
+    # One-shot .env load (rc4 Bug A). Must run BEFORE any caller
+    # observes env-derived values so that env vars written by setup
+    # propagate into get_config()'s env-first resolution.
+    _load_env_file()
 
     path = _resolve_yaml_path()
     if path != _cache_key:

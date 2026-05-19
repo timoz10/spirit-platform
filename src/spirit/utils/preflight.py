@@ -607,6 +607,36 @@ def run_preflight(
     return result
 
 
+def _paper_trading_label(tier: str) -> str:
+    """Short tier-aware descriptor for the paper-trading line."""
+    # rc4 Bug B fix: don't leak "Free tier" when the actual tier is paid.
+    if tier in ("subscription", "plus"):
+        return "Plus tier, gateway-backed"
+    if tier == "pro":
+        return "Pro tier, gateway-backed"
+    if tier == "free":
+        return "Free tier, exchange-direct OHLC"
+    # tier unset → assume free behavior (no gateway, direct OHLC).
+    return "exchange-direct OHLC"
+
+
+def _gateway_failure_reason(check) -> str:
+    """Map a failed gateway check's message to a user-actionable hint.
+
+    rc4 Bug C fix: pre-rc4 we said "set SPIRIT_API_KEY, get one at portal"
+    regardless of failure mode, even when the user HAD a key and it was
+    just rejected by the gateway. Now we read the check message to tell
+    the two states apart.
+    """
+    msg = (check.message or "").lower() if check else ""
+    if "rejected" in msg or "401" in msg or "403" in msg or "invalid" in msg or "unauthorized" in msg:
+        return "key rejected — verify at portal.tradebot.live/keys"
+    if "timeout" in msg or "unreachable" in msg or "could not reach" in msg or "connection" in msg:
+        return "gateway unreachable — check network / firewall"
+    # Default: assume the key is missing entirely.
+    return "set SPIRIT_API_KEY, get one at portal.tradebot.live"
+
+
 def _capabilities_summary(result: PreflightResult, tier: str) -> str:
     """Render a 'what can this instance actually do?' summary from check results.
 
@@ -618,10 +648,8 @@ def _capabilities_summary(result: PreflightResult, tier: str) -> str:
     by_name = {c.name: c for c in result.checks}
     env_passed = by_name.get('env_vars') and by_name['env_vars'].passed
     exchange_passed = by_name.get('exchange_keys') and by_name['exchange_keys'].passed
-    gateway_passed = (
-        by_name.get('gateway_capabilities')
-        and by_name['gateway_capabilities'].passed
-    )
+    gateway_check = by_name.get('gateway_capabilities')
+    gateway_passed = gateway_check and gateway_check.passed
 
     lines = ["", "Capabilities enabled:"]
     # Paper trading needs SPIRIT_STRATEGY (in env_vars) + a usable exchange
@@ -630,7 +658,7 @@ def _capabilities_summary(result: PreflightResult, tier: str) -> str:
         by_name.get('env_vars')
         and by_name['env_vars'].severity == 'WARN'
     ):
-        lines.append("  ✓ Paper trading (Free tier, exchange-direct OHLC)")
+        lines.append(f"  ✓ Paper trading ({_paper_trading_label(tier)})")
     else:
         lines.append("  ✗ Paper trading (missing SPIRIT_STRATEGY — run `spirit-setup`)")
 
@@ -646,7 +674,7 @@ def _capabilities_summary(result: PreflightResult, tier: str) -> str:
     elif gateway_passed:
         lines.append("  ✓ Gateway features (Plus/Pro indicators + scorer + risk gate)")
     else:
-        lines.append("  ✗ Gateway features (set SPIRIT_API_KEY, get one at portal.tradebot.live)")
+        lines.append(f"  ✗ Gateway features ({_gateway_failure_reason(gateway_check)})")
 
     return "\n".join(lines)
 
