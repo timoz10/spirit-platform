@@ -13,31 +13,28 @@ import json
 import logging
 import sys
 import os
-import yaml as _yaml
 from spirit.config import LOGGING_LEVEL, LOG_FILE
 
 
 def _resolve_instance() -> str:
-    """Read SPIRIT_INSTANCE from env or YAML without importing config_loader.
+    """Read SPIRIT_INSTANCE from env. Returns 'no-instance' when unset.
 
-    This avoids a circular import: spirit.config -> spirit.logger -> spirit.config.
-    Mirrors the env -> YAML -> default resolution of config_loader.get_config().
+    Pre-#733 this function walked up directories from `__file__` looking
+    for a `config/spirit.yaml` — which on pipx installs resolved to a
+    file inside the venv directory written by a buggy spirit-setup,
+    silently overriding the user's actual instance. See
+    docs/reference/MODULE_CONTRACTS.md for the resolution contract.
+
+    The logger uses the instance name only as a display prefix in log
+    lines; it does NOT read per-instance YAML to find it. If the user
+    needs the instance to appear in logs, set SPIRIT_INSTANCE explicitly
+    (the wizard writes this into ~/.spirit/<instance>/.env, and any
+    sensible launcher sources that file before invoking spirit).
     """
-    val = os.environ.get('SPIRIT_INSTANCE')
+    val = os.environ.get('SPIRIT_INSTANCE', '').strip()
     if val:
         return val
-    for candidate in [
-        os.path.join(os.path.dirname(__file__), 'config', 'spirit.yaml'),
-        os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'spirit.yaml'),
-    ]:
-        try:
-            with open(os.path.normpath(candidate)) as f:
-                conf = _yaml.safe_load(f) or {}
-                if conf.get('SPIRIT_INSTANCE'):
-                    return str(conf['SPIRIT_INSTANCE'])
-        except FileNotFoundError:
-            continue
-    return 'prod'
+    return 'no-instance'
 
 
 _INSTANCE = _resolve_instance()
