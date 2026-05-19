@@ -94,7 +94,14 @@ jobs:
           - os: ubuntu-24.04
             container: ""
           - os: ubuntu-latest
-            container: "debian:12"
+            # Debian Bookworm's default Python is 3.11; Spirit requires
+            # >=3.12. Use the official python:3.12 container based on
+            # bookworm so the matrix actually validates the "Debian 12
+            # with a 3.12 interpreter on PATH" path that real customers
+            # take (deadsnakes / pyenv / bookworm-backports). Pure
+            # default-Debian-12 isn't a supported install target — flag
+            # in INSTALL.md as a follow-up.
+            container: "python:3.12-slim-bookworm"
           # macOS pending #715 (smoke-test installation on macOS) —
           # when that issue ships, uncomment:
           # - os: macos-latest
@@ -104,16 +111,28 @@ jobs:
     container: ${{ matrix.container }}
 
     steps:
-      - name: Install OS prerequisites (Debian)
-        if: matrix.container == 'debian:12'
+      - name: Install OS prerequisites (Debian-bookworm container)
+        if: matrix.container == 'python:3.12-slim-bookworm'
         run: |
+          # python:3.12-slim ships python+pip but not pipx. Also pull
+          # curl + ca-certificates for the TestPyPI / verify steps.
           apt-get update
-          apt-get install -y curl python3 python3-pip python3-venv pipx
+          apt-get install -y curl ca-certificates pipx
+          pipx ensurepath
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Pin Python 3.12 (Ubuntu hosted runner)
+        if: matrix.container == ''
+        # Ubuntu 22.04's default Python is 3.10; 24.04 has 3.12. Pin
+        # 3.12 explicitly so the matrix actually validates the
+        # Spirit-supported interpreter on every Ubuntu version.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Install pipx (Ubuntu hosted runner)
         if: matrix.container == ''
         run: |
-          # ubuntu-22.04 / 24.04 hosted runners have python + pip preinstalled
           python3 -m pip install --upgrade pipx
           python3 -m pipx ensurepath
 
@@ -257,6 +276,13 @@ jobs:
     # job covers fresh-install runtime. This job is specifically about
     # the upgrade hop.
     steps:
+      - name: Pin Python 3.12 (Spirit requires >=3.12)
+        # Ubuntu 22.04's default Python is 3.10; without this step pip
+        # would reject every spirit-platform wheel as "wrong python".
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install pipx (Ubuntu hosted runner)
         run: |
           python3 -m pip install --upgrade pipx
@@ -467,6 +493,97 @@ jobs:
           fi
           echo "  ✓ log prefix shows [setup-test] — logger autodetect works"
 
+      - name: spirit-preflight loads ~/.spirit/<instance>/.env (rc4 Bug A)
+        run: |
+          # rc3 install test (Tim, 2026-05-19): editing
+          # ~/.spirit/<instance>/.env to add SPIRIT_API_KEY did NOT make
+          # spirit-preflight see the key — the file was never read. The
+          # documented Pro-flip flow ("edit .env, re-run preflight, see
+          # ✓ Gateway") silently failed.
+          #
+          # rc4 fix: config_loader._load_yaml() also calls _load_env_file()
+          # on first invocation. This step writes a sentinel SPIRIT_API_KEY
+          # into the instance .env, runs spirit-preflight with the env
+          # var explicitly UNSET, and asserts the value reached
+          # os.environ (proxy: env_vars check no longer flags it as
+          # missing OR the gateway check actually attempts to use it).
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # Flip the yaml to paid so the gateway-capabilities check fires
+          # and SPIRIT_API_KEY becomes required.
+          python3 -c "
+          import pathlib, re
+          p = pathlib.Path.home() / '.spirit' / 'setup-test' / 'spirit.yaml'
+          src = p.read_text()
+          if 'SPIRIT_TIER' in src:
+              src = re.sub(r'SPIRIT_TIER:\s*\S+', 'SPIRIT_TIER: subscription', src)
+          else:
+              src = 'SPIRIT_TIER: subscription\n' + src
+          p.write_text(src)
+          print('Flipped SPIRIT_TIER → subscription for gateway-check coverage')
+          "
+
+          # Write a sentinel key to .env (NOT a real key — just enough
+          # to prove the file is read and the value reaches os.environ).
+          cat >> "$HOME/.spirit/setup-test/.env" <<'EOF'
+          SPIRIT_API_KEY=sk_rc4_dotenv_load_sentinel
+          SPIRIT_API_URL=https://api.tradebot.live/v1
+          EOF
+          echo "Wrote sentinel SPIRIT_API_KEY to .env"
+
+          # Run preflight with the env var explicitly unset — the only
+          # way the value reaches preflight is via the .env load.
+          set +e
+          unset SPIRIT_API_KEY
+          spirit-preflight > envload-preflight.log 2>&1
+          STATUS=$?
+          set -e
+          cat envload-preflight.log
+
+          if grep -q "Traceback\|ModuleNotFoundError" envload-preflight.log; then
+            echo "::error::spirit-preflight crashed during .env-load test"
+            exit 1
+          fi
+
+          # Three assertions:
+          #
+          # 1. env_vars check must NOT report SPIRIT_API_KEY as missing —
+          #    proves the .env value reached os.environ before preflight
+          #    inspected it.
+          if grep -qE "Missing required env vars.*SPIRIT_API_KEY" envload-preflight.log; then
+            echo "::error::env_vars still reports SPIRIT_API_KEY missing — .env load didn't happen (Bug A regressed)"
+            exit 1
+          fi
+          echo "  ✓ env_vars check sees SPIRIT_API_KEY from .env"
+
+          # 2. Gateway-capabilities check must have FIRED (paid tier). If
+          #    .env didn't load, env_vars would FATAL out before reaching
+          #    the gateway check; "Checks run: N" would be 3 instead of 4+.
+          if ! grep -qE "Checks run:\s*[4-9]" envload-preflight.log; then
+            echo "::error::gateway-capabilities check didn't run — env_vars probably blocked it (Bug A regressed)"
+            exit 1
+          fi
+          echo "  ✓ gateway-capabilities check fired — .env load propagated through to paid-tier flow"
+
+          # 3. The sentinel key gets rejected by the real gateway (it's
+          #    not a real key), so the check fails with a 401-ish message.
+          #    The capability summary must report "rejected", NOT
+          #    "set SPIRIT_API_KEY" — that's the rc4 Bug C fix.
+          if grep -qE "Gateway features.*rejected|key rejected" envload-preflight.log; then
+            echo "  ✓ summary correctly reports 'key rejected' (Bug C fix verified)"
+          elif grep -qE "Gateway features.*set SPIRIT_API_KEY" envload-preflight.log; then
+            echo "::error::summary still says 'set SPIRIT_API_KEY' for a rejected key — Bug C regressed"
+            exit 1
+          fi
+
+          # 4. The paper-trading line must NOT leak 'Free tier' on a
+          #    paid-tier configuration — Bug B fix.
+          if grep -qE "Paper trading.*Free tier" envload-preflight.log; then
+            echo "::error::Paper trading line says 'Free tier' on a paid-tier instance — Bug B regressed"
+            exit 1
+          fi
+          echo "  ✓ Paper trading line reflects actual tier (Bug B fix verified)"
+
       - name: Upload upgrade logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -477,6 +594,7 @@ jobs:
             post-health.log
             post-preflight.log
             autodetect-preflight.log
+            envload-preflight.log
           retention-days: 14
 
   rc-verdict:
