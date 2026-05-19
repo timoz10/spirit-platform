@@ -45,13 +45,47 @@ _cache_key: Optional[str] = None   # the resolved YAML path the cache was built 
 _stale_check_done = False          # one-shot guard for the legacy-file warning
 
 
-def _resolve_yaml_path() -> Optional[str]:
-    """Return the per-instance spirit.yaml path, or None when unset.
+def resolve_active_instance() -> Optional[str]:
+    """Return the active instance name, with single-instance autodetect.
 
-    Resolution: SPIRIT_INSTANCE env -> ~/.spirit/<instance>/spirit.yaml.
-    Returns None when SPIRIT_INSTANCE is unset (no path to search).
+    Resolution order:
+
+      1. `SPIRIT_INSTANCE` env var (any value, even one that doesn't
+         match an existing directory — explicit user intent).
+      2. If env is unset and **exactly one** non-hidden directory lives
+         under `~/.spirit/`, return that directory's name (autodetect
+         for the common single-instance case).
+      3. Otherwise None (no instance, or ambiguous multi-instance state).
+
+    Used by `_resolve_yaml_path()` here and by `spirit.logger` for its
+    display prefix, so a freshly-set-up single-instance box "just works"
+    without the user having to source a `.env` first.
     """
-    instance = os.environ.get("SPIRIT_INSTANCE", "").strip()
+    explicit = os.environ.get("SPIRIT_INSTANCE", "").strip()
+    if explicit:
+        return explicit
+    spirit_root = os.path.join(os.path.expanduser("~"), ".spirit")
+    try:
+        candidates = [
+            d for d in os.listdir(spirit_root)
+            if not d.startswith(".") and os.path.isdir(os.path.join(spirit_root, d))
+        ]
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    # 0 or 2+ → no single answer, caller falls through to defaults.
+    return None
+
+
+def _resolve_yaml_path() -> Optional[str]:
+    """Return the per-instance spirit.yaml path, or None when no instance.
+
+    Resolves the active instance via `resolve_active_instance()` (env var
+    or single-directory autodetect), then maps it to
+    `~/.spirit/<instance>/spirit.yaml`.
+    """
+    instance = resolve_active_instance()
     if not instance:
         return None
     return os.path.join(os.path.expanduser("~"), ".spirit", instance, "spirit.yaml")
