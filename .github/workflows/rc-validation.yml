@@ -133,7 +133,9 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           pipx list | grep "spirit-platform ${{ needs.wait-for-testpypi.outputs.version }}"
 
-      - name: Smoke — spirit-health
+      # Smoke gates enforce the diagnostic-tool exit-code contracts from
+      # docs/reference/MODULE_CONTRACTS.md — fresh CI box, exact codes only.
+      - name: Smoke — spirit-health (assert RC_NO_INSTANCES=1)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           set +e
@@ -145,21 +147,27 @@ jobs:
             echo "::error::spirit-health produced a Python traceback on ${{ matrix.os }}"
             exit 1
           fi
-          # No-instances-configured exits 1 — that's fine on a fresh CI box
-          if [ "$STATUS" -gt 1 ]; then
-            echo "::error::spirit-health exited with unexpected status $STATUS"
+          if [ "$STATUS" -ne 1 ]; then
+            echo "::error::spirit-health exited $STATUS on ${{ matrix.os }}, expected 1 (RC_NO_INSTANCES)"
+            echo "::error::See docs/reference/MODULE_CONTRACTS.md for the contract"
             exit 1
           fi
 
-      - name: Smoke — spirit-preflight
+      - name: Smoke — spirit-preflight (assert RC_DIAGNOSTIC_BLOCKING=1)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           set +e
           spirit-preflight > preflight.log 2>&1
+          STATUS=$?
           set -e
           cat preflight.log
           if grep -q "Traceback\|ModuleNotFoundError" preflight.log; then
             echo "::error::spirit-preflight produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+          if [ "$STATUS" -ne 1 ]; then
+            echo "::error::spirit-preflight exited $STATUS on ${{ matrix.os }}, expected 1 (RC_DIAGNOSTIC_BLOCKING)"
+            echo "::error::See docs/reference/MODULE_CONTRACTS.md for the contract"
             exit 1
           fi
 
@@ -217,28 +225,175 @@ jobs:
             runtime.log
           retention-days: 14
 
+  upgrade-matrix:
+    name: Upgrade from latest PyPI on ${{ matrix.os }}
+    needs: wait-for-testpypi
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            container: ""
+          - os: ubuntu-24.04
+            container: ""
+
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+
+    # Why an upgrade matrix exists:
+    #   Customers running `pipx upgrade spirit-platform` after a release
+    #   need their existing ~/.spirit/<instance>/ to keep working. This
+    #   job proves that the new wheel can take over from the latest
+    #   PyPI version (the one customers already have) without:
+    #     - breaking instance-directory discovery
+    #     - producing a Python traceback on spirit-health / spirit-preflight
+    #     - changing the spirit-health exit-code matrix in a way that
+    #       would surprise monitoring scripts
+    #
+    # We don't run a full `spirit --mode test` here — the install-matrix
+    # job covers fresh-install runtime. This job is specifically about
+    # the upgrade hop.
+    steps:
+      - name: Install pipx (Ubuntu hosted runner)
+        run: |
+          python3 -m pip install --upgrade pipx
+          python3 -m pipx ensurepath
+
+      - name: Install LATEST PyPI version (simulate existing customer)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          # No version pin — installs whatever PyPI currently calls latest.
+          # That's what `pipx upgrade` resolves against, so it's the right
+          # baseline to test upgrades from.
+          pipx install spirit-platform
+          INSTALLED_VERSION=$(pipx list --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['venvs']['spirit-platform']['metadata']['main_package']['package_version'])")
+          echo "Baseline (PyPI latest): spirit-platform==${INSTALLED_VERSION}"
+          echo "BASELINE_VERSION=${INSTALLED_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Create a synthetic instance directory (mimic spirit-setup output)
+        run: |
+          # We can't run `spirit-setup` non-interactively yet (questionary
+          # has no headless flag). Instead we write the minimal files that
+          # spirit-setup would write, so the upgrade can prove instance-dir
+          # compatibility without depending on wizard internals.
+          mkdir -p "$HOME/.spirit/upgrade-test"
+          cat > "$HOME/.spirit/upgrade-test/spirit.yaml" <<EOF
+          instance: upgrade-test
+          tier: free
+          strategy: sma_crossover
+          pairs:
+            - XBTUSD
+          EOF
+          cat > "$HOME/.spirit/upgrade-test/.env" <<EOF
+          SPIRIT_INSTANCE=upgrade-test
+          SPIRIT_TIER=free
+          SPIRIT_STRATEGY=sma_crossover
+          SPIRIT_PAIRS=XBTUSD
+          EOF
+          ls -la "$HOME/.spirit/upgrade-test/"
+
+      - name: Capture pre-upgrade spirit-health behavior
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          spirit-health > pre-health.log 2>&1
+          PRE_STATUS=$?
+          set -e
+          cat pre-health.log
+          echo "Pre-upgrade spirit-health rc: ${PRE_STATUS}"
+          echo "PRE_HEALTH_STATUS=${PRE_STATUS}" >> "$GITHUB_ENV"
+          # No assertion on the pre-version's exit code — we don't know what
+          # contract the baseline shipped under. We're testing the UPGRADE
+          # hop, not the baseline's contract.
+
+      - name: Upgrade to RC wheel from TestPyPI
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          VERSION="${{ needs.wait-for-testpypi.outputs.version }}"
+          pipx install --force \
+            --pip-args="--no-cache-dir --extra-index-url https://pypi.org/simple/" \
+            --index-url "https://test.pypi.org/simple/" \
+            "spirit-platform==${VERSION}"
+          # Confirm pipx now reports the new version.
+          pipx list | grep "spirit-platform ${VERSION}" || \
+            (echo "::error::pipx still reports the baseline version after upgrade"; exit 1)
+          echo "Upgraded ${BASELINE_VERSION} → ${VERSION}"
+
+      - name: Post-upgrade spirit-health — instance dir must still work
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          spirit-health > post-health.log 2>&1
+          POST_STATUS=$?
+          set -e
+          cat post-health.log
+
+          if grep -q "Traceback\|ModuleNotFoundError" post-health.log; then
+            echo "::error::spirit-health crashed after upgrade — the upgrade-path is broken"
+            exit 1
+          fi
+
+          # The synthetic instance has no DB, so it's an orphan-config →
+          # spirit-health contract: at least one instance exists, none healthy
+          # → RC_DEGRADED (2). This is the EXACT expected code for the
+          # "config-only, never started" upgrade-test fixture.
+          if [ "$POST_STATUS" -ne 2 ]; then
+            echo "::error::Post-upgrade spirit-health rc=${POST_STATUS}, expected 2 (RC_DEGRADED for orphan-config instance)"
+            echo "::error::See docs/reference/MODULE_CONTRACTS.md for the contract"
+            exit 1
+          fi
+
+          # Instance must still be discoverable by name — proves the dir
+          # convention didn't change between versions.
+          if ! grep -q "upgrade-test" post-health.log; then
+            echo "::error::spirit-health didn't list the upgrade-test instance after upgrade"
+            exit 1
+          fi
+
+      - name: Post-upgrade spirit-preflight — must not crash
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          SPIRIT_INSTANCE=upgrade-test spirit-preflight > post-preflight.log 2>&1
+          set -e
+          cat post-preflight.log
+          if grep -q "Traceback\|ModuleNotFoundError" post-preflight.log; then
+            echo "::error::spirit-preflight crashed after upgrade"
+            exit 1
+          fi
+
+      - name: Upload upgrade logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-upgrade-${{ matrix.os }}
+          path: |
+            pre-health.log
+            post-health.log
+            post-preflight.log
+          retention-days: 14
+
   rc-verdict:
     name: RC verdict (require all platforms green)
-    needs: install-matrix
+    needs: [install-matrix, upgrade-matrix]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Aggregate platform results
         run: |
-          # GitHub's `needs.install-matrix.result` collapses to a single
-          # status across the matrix. 'success' = all platforms passed.
-          # Anything else = at least one platform failed.
-          RESULT="${{ needs.install-matrix.result }}"
-          echo "Install matrix result: $RESULT"
-          case "$RESULT" in
-            success)
-              echo "::notice::RC validation PASSED — all platforms reached GREEN LIGHT"
-              echo "Promote to full release with:  git tag ${GITHUB_REF#refs/tags/v} && git push public ${GITHUB_REF#refs/tags/v}"
-              echo "  (replace -rc* suffix with the full version)"
-              ;;
-            *)
-              echo "::error::RC validation FAILED — see install-matrix job for which platforms failed"
-              echo "DO NOT promote this RC to a full release."
-              exit 1
-              ;;
-          esac
+          INSTALL_RESULT="${{ needs.install-matrix.result }}"
+          UPGRADE_RESULT="${{ needs.upgrade-matrix.result }}"
+          echo "Install matrix result:  $INSTALL_RESULT"
+          echo "Upgrade matrix result:  $UPGRADE_RESULT"
+          if [ "$INSTALL_RESULT" = "success" ] && [ "$UPGRADE_RESULT" = "success" ]; then
+            echo "::notice::RC validation PASSED — fresh-install AND upgrade-from-PyPI green on all platforms"
+            echo "Promote to full release with:  git tag ${GITHUB_REF#refs/tags/v} && git push public ${GITHUB_REF#refs/tags/v}"
+            echo "  (replace -rc* suffix with the full version)"
+          else
+            echo "::error::RC validation FAILED"
+            echo "  install-matrix: $INSTALL_RESULT"
+            echo "  upgrade-matrix: $UPGRADE_RESULT"
+            echo "DO NOT promote this RC to a full release."
+            exit 1
+          fi

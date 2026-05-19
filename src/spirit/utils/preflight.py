@@ -13,16 +13,57 @@ Usage:
     result = run_preflight()
     if not result.passed:
         sys.exit(1)
+
+
+Exit code contract (standalone CLI: ``spirit-preflight``)
+=========================================================
+
+When invoked as a CLI (`main()` below — entry point for ``spirit-preflight``),
+this module follows a three-state exit code contract. See
+``docs/reference/MODULE_CONTRACTS.md`` for the cross-tool design.
+
+    RC_DIAGNOSTIC_OK       = 0  — diagnostic completed, no FATAL checks.
+                                  Paper-mode would start. Live-mode readiness
+                                  is shown in the "Capabilities enabled"
+                                  summary (✓/✗), NOT in the exit code —
+                                  this is intentional: standalone preflight
+                                  is informational, the real live-mode gate
+                                  is inside `spirit --mode live`.
+    RC_DIAGNOSTIC_BLOCKING = 1  — diagnostic completed, at least one FATAL
+                                  check (typically missing SPIRIT_STRATEGY,
+                                  missing instance dir, broken config).
+                                  Paper-mode would NOT start either.
+                                  CI gates on a fresh box assert this code
+                                  because env_vars FAIL is expected there.
+    RC_INTERNAL_ERROR      = 2  — uncaught exception inside the tool itself
+                                  (import failure, gateway URL malformed,
+                                  etc.). Alert on the tool, not on the
+                                  user's config.
+
+The contract is pinned by ``tests/test_spirit_preflight_contract.py`` and
+asserted by both CI gates. Any change is a breaking change for downstream
+scripts — bump MAJOR and call it out in CHANGELOG.
+
+The in-run preflight called from ``spirit.main`` continues to use the
+``run_preflight()`` function's ``PreflightResult`` directly — the exit
+code contract above applies only to the standalone CLI entry point.
 """
 
 import json
 import logging
 import os
 import shutil
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+
+# Exit-code contract (see module docstring).
+RC_DIAGNOSTIC_OK = 0
+RC_DIAGNOSTIC_BLOCKING = 1
+RC_INTERNAL_ERROR = 2
 
 from spirit.logger import get_logger
 logger = get_logger("preflight")
@@ -610,37 +651,56 @@ def _capabilities_summary(result: PreflightResult, tier: str) -> str:
     return "\n".join(lines)
 
 
+def _compute_exit_code(result: 'PreflightResult') -> int:
+    """Apply the spirit-preflight exit-code contract to a PreflightResult.
+
+    See module docstring for the contract. Pure function — kept separate
+    so tests/test_spirit_preflight_contract.py can assert it directly.
+    """
+    if result.passed:
+        return RC_DIAGNOSTIC_OK
+    return RC_DIAGNOSTIC_BLOCKING
+
+
 def main():
     """CLI entry point for standalone preflight checks.
 
     Runs in 'diagnostic' mode — informational, missing-but-not-strictly-required
     keys produce WARN instead of FATAL. For the in-run preflight that
     actually blocks startup, see `run_preflight()` called from spirit.main.
+
+    Exit codes: see module docstring "Exit code contract" section.
     """
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     )
-    result = run_preflight(diagnostic=True)
-    tier = _resolve_tier()
 
-    print()
-    print("=" * 60)
-    print(f"Pre-flight diagnostic: {'PASSED' if result.passed else 'FAILED'}")
-    print(f"  Checks run: {len(result.checks)}")
-    print(f"  Passed:     {sum(1 for c in result.checks if c.passed)}")
-    print(f"  Warnings:   {len(result.warnings)}")
-    print(f"  Fatal:      {len(result.fatal_failures)}")
-    print("=" * 60)
-    print(_capabilities_summary(result, tier))
-    print()
+    try:
+        result = run_preflight(diagnostic=True)
+        tier = _resolve_tier()
 
-    # Diagnostic mode exits 0 unless there's a true FATAL (e.g. SPIRIT_STRATEGY
-    # missing — without that we can't run anything). Missing exchange keys
-    # on Free + paper, missing SPIRIT_API_KEY on Free, etc. are WARN and
-    # exit cleanly.
-    if not result.passed:
-        raise SystemExit(1)
+        print()
+        print("=" * 60)
+        print(f"Pre-flight diagnostic: {'PASSED' if result.passed else 'FAILED'}")
+        print(f"  Checks run: {len(result.checks)}")
+        print(f"  Passed:     {sum(1 for c in result.checks if c.passed)}")
+        print(f"  Warnings:   {len(result.warnings)}")
+        print(f"  Fatal:      {len(result.fatal_failures)}")
+        print("=" * 60)
+        print(_capabilities_summary(result, tier))
+        print()
+
+        raise SystemExit(_compute_exit_code(result))
+    except SystemExit:
+        raise
+    except Exception as exc:
+        # Tool itself failed — distinguish from "user config has FATAL".
+        print(
+            f"\nspirit-preflight: internal error: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(RC_INTERNAL_ERROR)
 
 
 if __name__ == '__main__':

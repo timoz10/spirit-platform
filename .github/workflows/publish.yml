@@ -92,16 +92,45 @@ jobs:
           echo "Installing $WHEEL"
           pipx install "$WHEEL"
 
-      - name: Smoke — spirit-health (must exit cleanly)
-        run: spirit-health
-
-      - name: Smoke — spirit-preflight (expect env_vars FAIL, no traceback)
+      # Smoke gates enforce the diagnostic-tool exit-code contracts from
+      # docs/reference/MODULE_CONTRACTS.md. On a fresh CI box (no ~/.spirit/,
+      # no env vars beyond the defaults set below for the spirit smoke step),
+      # the EXACT expected codes are:
+      #   spirit-health     → RC_NO_INSTANCES (1)
+      #   spirit-preflight  → RC_DIAGNOSTIC_BLOCKING (1)  [SPIRIT_STRATEGY missing]
+      # We assert these exact values, not a "0 or 1" range — drift in either
+      # tool that produces a different code should fail the gate.
+      - name: Smoke — spirit-health (assert RC_NO_INSTANCES=1)
         run: |
           set +e
-          spirit-preflight 2>&1 | tee preflight.log
+          spirit-health > health.log 2>&1
+          STATUS=$?
           set -e
+          cat health.log
+          if grep -q "Traceback\|ModuleNotFoundError" health.log; then
+            echo "::error::spirit-health produced a Python traceback"
+            exit 1
+          fi
+          if [ "$STATUS" -ne 1 ]; then
+            echo "::error::spirit-health exited $STATUS, expected 1 (RC_NO_INSTANCES) on a fresh CI box"
+            echo "::error::See docs/reference/MODULE_CONTRACTS.md for the contract"
+            exit 1
+          fi
+
+      - name: Smoke — spirit-preflight (assert RC_DIAGNOSTIC_BLOCKING=1)
+        run: |
+          set +e
+          spirit-preflight > preflight.log 2>&1
+          STATUS=$?
+          set -e
+          cat preflight.log
           if grep -q "Traceback\|ModuleNotFoundError" preflight.log; then
             echo "::error::preflight produced a Python traceback"
+            exit 1
+          fi
+          if [ "$STATUS" -ne 1 ]; then
+            echo "::error::spirit-preflight exited $STATUS, expected 1 (RC_DIAGNOSTIC_BLOCKING) on a fresh CI box"
+            echo "::error::See docs/reference/MODULE_CONTRACTS.md for the contract"
             exit 1
           fi
 

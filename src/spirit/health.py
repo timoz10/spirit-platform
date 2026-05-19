@@ -14,6 +14,34 @@ Use cases:
 This is a diagnostic tool — it never returns FATAL on "this instance
 isn't set up." Block-startup logic belongs inside `spirit` itself,
 where it knows the user's intent (mode, tier, instance).
+
+
+Exit code contract
+==================
+
+`spirit-health` follows a four-state exit code contract (see
+docs/reference/MODULE_CONTRACTS.md for the cross-tool design):
+
+    RC_HEALTHY        = 0  — at least one instance with a recent heartbeat
+                             (process up). Monitoring should treat this as green.
+    RC_NO_INSTANCES   = 1  — no instances configured. Informational only —
+                             this is the expected state on a freshly installed
+                             box that hasn't run `spirit-setup` yet. CI gates
+                             that test the tool on a clean machine assert
+                             exactly this code.
+    RC_DEGRADED       = 2  — one or more instances exist but none has a recent
+                             heartbeat (stopped daemon, stale heartbeat,
+                             orphan DB without config, or config without DB).
+                             Monitoring should alert: needs attention.
+    RC_INTERNAL_ERROR = 3  — uncaught exception inside spirit-health itself
+                             (import failure, filesystem permission error,
+                             corrupted sqlite, etc.). Alert on the tool, not
+                             on the instance.
+
+The contract is pinned by tests/test_spirit_health_contract.py and asserted
+by both CI gates (.github/workflows/publish.yml and rc-validation.yml).
+Any change to these exit codes is a breaking change for downstream
+monitoring scripts — bump the MAJOR version and call it out in CHANGELOG.
 """
 from __future__ import annotations
 
@@ -25,6 +53,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+
+# Exit-code contract (see module docstring).
+RC_HEALTHY = 0
+RC_NO_INSTANCES = 1
+RC_DEGRADED = 2
+RC_INTERNAL_ERROR = 3
 
 
 # Names under ~/.spirit/ that are NOT instances (reserved or shared).
@@ -413,6 +448,20 @@ def _print_tips() -> None:
 # CLI
 # ----------------------------------------------------------------------------
 
+def _compute_exit_code(instances: list[InstanceInfo]) -> int:
+    """Apply the spirit-health exit-code contract to a discovered instance list.
+
+    See module docstring for the contract. Pure function — kept separate so
+    tests/test_spirit_health_contract.py can assert it directly without
+    spawning a subprocess.
+    """
+    if not instances:
+        return RC_NO_INSTANCES
+    if any(info.is_running for info in instances):
+        return RC_HEALTHY
+    return RC_DEGRADED
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="spirit-health",
@@ -442,24 +491,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    now = datetime.now(timezone.utc)
-    spirit_dir = Path.home() / ".spirit"
-    instances = _discover_instances(spirit_dir)
-    active_name = _resolve_active_instance(instances)
+    try:
+        now = datetime.now(timezone.utc)
+        spirit_dir = Path.home() / ".spirit"
+        instances = _discover_instances(spirit_dir)
+        active_name = _resolve_active_instance(instances)
 
-    print(_render_summary(
-        instances, active_name, now, args.verbose,
-        filter_name=args.instance.strip() if args.instance else None,
-    ))
+        print(_render_summary(
+            instances, active_name, now, args.verbose,
+            filter_name=args.instance.strip() if args.instance else None,
+        ))
 
-    if not args.no_tips:
-        _print_tips()
+        if not args.no_tips:
+            _print_tips()
 
-    # Exit code: 0 if at least one instance is running or has a DB,
-    # 1 if nothing's been set up. (Diagnostic tool — not a startup gate.)
-    if not instances:
-        return 1
-    return 0
+        return _compute_exit_code(instances)
+    except Exception as exc:
+        # Tool itself failed — return RC_INTERNAL_ERROR so monitoring
+        # scripts can distinguish "tool is broken" from "instance is broken".
+        print(
+            f"\nspirit-health: internal error: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return RC_INTERNAL_ERROR
 
 
 if __name__ == "__main__":
