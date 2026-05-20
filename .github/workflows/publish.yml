@@ -285,3 +285,102 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           print-hash: true
+
+  create-github-release:
+    name: Create GitHub Release
+    # Customer-facing "this just shipped" signal. Fires AFTER the wheel
+    # actually lands on (Test)PyPI so the Release body's install link
+    # works at the moment the Release is published.
+    #
+    # GA tags become regular Releases (shown by default, email-notify
+    # subscribers). RC / test tags become pre-release Releases (hidden
+    # from the default Releases view, no email — opt-in via the "Show
+    # pre-releases" toggle).
+    #
+    # Pattern: docs/RELEASE_PUBLISHING_RUNBOOK.md § 5.5.
+    needs: [publish-pypi, publish-testpypi]
+    if: always() && (needs.publish-pypi.result == 'success' || needs.publish-testpypi.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Compose Release metadata
+        id: meta
+        run: |
+          TAG="${{ github.ref_name }}"
+          # PEP 440 wheel version (strip dash before rc/test, e.g. v2.2.3-rc8 → 2.2.3rc8)
+          WHEEL_VERSION="${TAG#v}"
+          WHEEL_VERSION="${WHEEL_VERSION/-rc/rc}"
+          WHEEL_VERSION="${WHEEL_VERSION/-test/.dev}"
+          # Bare version for CHANGELOG section lookup (e.g. 2.2.3rc8 → 2.2.3)
+          BARE_VERSION="${WHEEL_VERSION%rc*}"
+          BARE_VERSION="${BARE_VERSION%.dev*}"
+
+          if [[ "$TAG" == *-rc* || "$TAG" == *-test* ]]; then
+            PYPI_URL="https://test.pypi.org/project/spirit-platform/${WHEEL_VERSION}/"
+            PRERELEASE=true
+            INSTALL_HINT="Pre-release. Opt-in install: \`pip install --pre --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ spirit-platform==${WHEEL_VERSION}\`"
+          else
+            PYPI_URL="https://pypi.org/project/spirit-platform/${WHEEL_VERSION}/"
+            PRERELEASE=false
+            INSTALL_HINT="\`pip install --upgrade spirit-platform\` (existing install) or \`pipx install spirit-platform\` (fresh)"
+          fi
+
+          echo "wheel_version=${WHEEL_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bare_version=${BARE_VERSION}"   >> "$GITHUB_OUTPUT"
+          echo "pypi_url=${PYPI_URL}"           >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}"       >> "$GITHUB_OUTPUT"
+          # Multiline output value via delimiter, since INSTALL_HINT has spaces/backticks
+          {
+            echo "install_hint<<EOF"
+            echo "$INSTALL_HINT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Extract CHANGELOG section
+        id: notes
+        run: |
+          # Pull the [X.Y.Z] section out of CHANGELOG.md. Each RC of a
+          # given version reuses the same section (e.g. v2.2.3 rc1-rc8
+          # all see the [2.2.3] section). If no section exists, fall
+          # back to a generic pointer.
+          VERSION="${{ steps.meta.outputs.bare_version }}"
+          SECTION=$(awk -v v="$VERSION" '
+            $0 ~ "^## \\["v"\\]" { p = 1; print; next }
+            p && /^## \[/         { exit }
+            p                     { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$SECTION" ]; then
+            SECTION="See [CHANGELOG.md](https://github.com/timoz10/spirit-platform/blob/main/CHANGELOG.md) for changes in this release."
+          fi
+
+          {
+            echo "**Install:** ${{ steps.meta.outputs.install_hint }}"
+            echo
+            echo "**PyPI:** ${{ steps.meta.outputs.pypi_url }}"
+            echo
+            echo "---"
+            echo
+            echo "$SECTION"
+          } > /tmp/release_body.md
+
+          echo "Body preview:"
+          cat /tmp/release_body.md
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Spirit ${{ github.ref_name }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          body_path: /tmp/release_body.md
+          # Don't fail the whole workflow if the Release already exists
+          # (e.g. manually backfilled). The PyPI publish has already
+          # succeeded by this point.
+          fail_on_unmatched_files: false
