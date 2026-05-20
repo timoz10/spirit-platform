@@ -233,6 +233,66 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke — spirit --csv-input rejects bad combos (#759 contract)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          export SPIRIT_TIER=free
+          export SPIRIT_INSTANCE=ci-smoke
+
+          set +e
+          spirit --mode paper --csv-input --csv-path /tmp/nonexistent.csv > csv-mode.log 2>&1
+          STATUS_A=$?
+          set -e
+          cat csv-mode.log
+          if [ "$STATUS_A" -eq 0 ]; then
+            echo "::error::--mode paper --csv-input should have been rejected on ${{ matrix.os }} (got rc=0)"
+            exit 1
+          fi
+          if grep -q "Traceback\|ModuleNotFoundError" csv-mode.log; then
+            echo "::error::--csv-input mode rejection produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+          if ! grep -q "requires --mode test" csv-mode.log; then
+            echo "::error::--mode paper --csv-input did not surface the mode-mismatch message on ${{ matrix.os }}"
+            exit 1
+          fi
+
+          set +e
+          spirit --csv-input --csv-path /tmp/nonexistent.csv > csv-path.log 2>&1
+          STATUS_B=$?
+          set -e
+          cat csv-path.log
+          if [ "$STATUS_B" -eq 0 ]; then
+            echo "::error::--csv-path /tmp/nonexistent.csv should have been rejected on ${{ matrix.os }} (got rc=0)"
+            exit 1
+          fi
+          if grep -q "Traceback\|ModuleNotFoundError" csv-path.log; then
+            echo "::error::--csv-input path rejection produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+          if ! grep -q "file not found" csv-path.log; then
+            echo "::error::--csv-input did not surface the file-not-found message on ${{ matrix.os }}"
+            exit 1
+          fi
+
+          set +e
+          spirit --csv --csv-path /tmp/nonexistent.csv > csv-legacy.log 2>&1
+          STATUS_C=$?
+          set -e
+          cat csv-legacy.log
+          if [ "$STATUS_C" -eq 0 ]; then
+            echo "::error::legacy --csv with missing path should fail at validation on ${{ matrix.os }}"
+            exit 1
+          fi
+          if grep -q "unrecognized arguments: --csv$\|invalid choice" csv-legacy.log; then
+            echo "::error::legacy --csv alias is no longer recognized by argparse on ${{ matrix.os }}"
+            exit 1
+          fi
+          if ! grep -q "file not found" csv-legacy.log; then
+            echo "::error::legacy --csv did not trigger the same validation path as --csv-input on ${{ matrix.os }}"
+            exit 1
+          fi
+
       - name: Smoke — spirit --list-runs (Free tier, empty SQLite — regression gate for #757)
         # rc9 failure mode: a public-allowlisted module (run_manager.py)
         # lazy-imports a DENIED module (db_connection.py). Per-platform
@@ -343,6 +403,9 @@ jobs:
             health.log
             preflight.log
             help.log
+            csv-mode.log
+            csv-path.log
+            csv-legacy.log
             list-runs.log
             delete-run.log
             runtime.log
