@@ -196,6 +196,59 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke — spirit --list-runs (Free tier, empty SQLite — regression gate for #757)
+        # rc9 failure mode: a public-allowlisted module lazy-imports a
+        # DENIED module. Surfaces at first call, not at install. Catches
+        # that class for any future similar flag.
+        run: |
+          export SPIRIT_TIER=free
+          export SPIRIT_INSTANCE=ci-smoke
+          # SPIRIT_STRATEGY required by in-run preflight pre-#758 (no-op
+          # post-#758 because argparse exits first).
+          export SPIRIT_STRATEGY=macd_demo
+          set +e
+          spirit --list-runs > list-runs.log 2>&1
+          STATUS=$?
+          set -e
+          cat list-runs.log
+          if grep -q "Traceback\|ModuleNotFoundError" list-runs.log; then
+            echo "::error::spirit --list-runs produced a Python traceback"
+            exit 1
+          fi
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::spirit --list-runs exited $STATUS, expected 0"
+            exit 1
+          fi
+          if ! grep -q "No replay runs found" list-runs.log; then
+            echo "::error::expected 'No replay runs found' on empty Free install"
+            exit 1
+          fi
+
+      - name: Smoke — spirit --delete-run on nonexistent id (Free tier — #757 contract)
+        # Exercises the symmetric path. Nonexistent id must exit 0 with
+        # a clean not-found message, not a "deleted 0 rows" footgun.
+        run: |
+          export SPIRIT_TIER=free
+          export SPIRIT_INSTANCE=ci-smoke
+          export SPIRIT_STRATEGY=macd_demo
+          set +e
+          spirit --delete-run nonexistent-run-id-xyz > delete-run.log 2>&1
+          STATUS=$?
+          set -e
+          cat delete-run.log
+          if grep -q "Traceback\|ModuleNotFoundError" delete-run.log; then
+            echo "::error::spirit --delete-run produced a Python traceback"
+            exit 1
+          fi
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::spirit --delete-run exited $STATUS on nonexistent id, expected 0"
+            exit 1
+          fi
+          if ! grep -q "not found" delete-run.log; then
+            echo "::error::expected 'not found' message for nonexistent run id"
+            exit 1
+          fi
+
       - name: Smoke — spirit --mode test (30s runtime)
         run: |
           # Provide minimal env so spirit reaches main() without env-var
@@ -233,6 +286,8 @@ jobs:
           name: smoke-logs
           path: |
             preflight.log
+            list-runs.log
+            delete-run.log
             runtime.log
           retention-days: 7
 
