@@ -17,7 +17,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Multi-instance guard now fires for pipx-installed customers (CRITICAL real-money safety fix).** Pre-#760 `runtime_lock.detect_other_spirit_processes()` used a pgrep regex (`\bspirit\.main\b`) that only matched the dev `python -m spirit.main` invocation. Every pipx-installed customer running `/.local/bin/spirit ...` has argv that contains the word `spirit` but never the literal `spirit.main` — pgrep returned empty, the guard fired for nobody. In live mode, two daemons on the same instance would have issued duplicate orders to the exchange. The regex now matches both patterns (`spirit\.main` for dev, `\bspirit\b` for installed), and a tightened stage-2 argv filter rejects the inevitable false positives (`spirit-health`, `spirit-preflight`, `spirit-setup`, shell wrappers, random python processes that mention "spirit" in argv). 33 unit tests pin every case in the detection matrix. Contract documented in `docs/reference/MODULE_CONTRACTS.md`. (#760)
 
 
 ## [2.2.3] — 2026-05-20
