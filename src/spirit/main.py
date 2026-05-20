@@ -1384,6 +1384,91 @@ class SpiritOrchestrator:
 
 def main():
     logger = get_logger("spirit_main")
+
+    # ------------------------------------------------------------------
+    # Argparse FIRST (#758). No DB writes, no preflight, no exchange
+    # init, no heartbeat before this point — `spirit --help`,
+    # `spirit --version`, unknown-flag rejection, `spirit --list-runs`
+    # and `spirit --delete-run` are all read-only query/admin paths
+    # and MUST NOT mutate user state. Same pattern as #733's fix for
+    # spirit-setup. See docs/reference/MODULE_CONTRACTS.md for the
+    # `spirit --help` read-only contract.
+    # ------------------------------------------------------------------
+    parser = argparse.ArgumentParser(description="SPIRIT Main Orchestration")
+    parser.add_argument('--csv', dest='data_source', action='store_const', const='csv', default='kraken')
+    parser.add_argument('--csv-path', type=str, default='test_data.csv')
+    parser.add_argument('--buffer-size', type=int, default=KRAKEN_OHLC_COUNT)
+    parser.add_argument('--mode', type=str, choices=['test', 'paper', 'live'], default='test')
+    parser.add_argument('--multi-interval', action='store_true')
+    parser.add_argument('--allow-multi-instance', action='store_true',
+                        help="Skip the 'another Spirit running?' guard at startup. "
+                             "Use only for genuine multi-instance setups (Pro tier).")
+    parser.add_argument('--duration', type=int, default=None)
+    parser.add_argument('--no-pause', action='store_true')
+    parser.add_argument('--exit-after-warmup', action='store_true')
+    parser.add_argument('--replay', action='store_true', help='PG replay backtest mode')
+    parser.add_argument('--start', type=str, default=None, help='Replay start date (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, default=None, help='Replay end date (YYYY-MM-DD)')
+    parser.add_argument('--with-monitoring', action='store_true',
+                        help='Include monitoring intervals (1m) in replay for dynamic exit')
+    parser.add_argument('--run-tag', type=str, default=None,
+                        help='Human-readable label for this replay run (e.g. "baseline")')
+    parser.add_argument('--run-id', type=str, default=None,
+                        help='Explicit run_id (UUID) to use instead of auto-generation. '
+                             'Used by CI replay-determinism gate so the diff script can '
+                             'find the rows without scraping logs (#522).')
+    parser.add_argument('--list-runs', action='store_true',
+                        help='Print replay run table and exit')
+    parser.add_argument('--delete-run', type=str, default=None, metavar='RUN_ID',
+                        help='Delete all data for a specific run ID and exit')
+    args = parser.parse_args()
+
+    # --list-runs: print run table and exit (no startup machinery).
+    if args.list_runs:
+        from spirit.utils.run_manager import list_runs
+        runs = list_runs(limit=30)
+        if not runs:
+            print("No replay runs found.")
+        else:
+            print(f"{'ID':>8}  {'Tag':<15}  {'Strategy':<15}  {'Pairs':<30}  "
+                  f"{'Range':<25}  {'Status':<10}  {'Trades':>6}  {'WR':>6}  {'PF':>6}  {'Net%':>8}")
+            print("-" * 160)
+            for r in runs:
+                rid = r['id'][:8] + '...'
+                tag = (r.get('tag') or '-')[:15]
+                strat = (r.get('strategy_name') or '-')[:15]
+                pairs_str = (r.get('pairs') or '-')[:30]
+                date_range = f"{r.get('start_date', '?')} to {r.get('end_date', '?')}"
+                status = r.get('status', '?')
+                trades = r.get('total_trades') or 0
+                wr = f"{float(r['win_rate']):.1%}" if r.get('win_rate') is not None else '-'
+                pf = f"{float(r['profit_factor']):.2f}" if r.get('profit_factor') is not None else '-'
+                net = f"{float(r['net_pnl_pct']):.2f}" if r.get('net_pnl_pct') is not None else '-'
+                print(f"{rid:>8}  {tag:<15}  {strat:<15}  {pairs_str:<30}  "
+                      f"{date_range:<25}  {status:<10}  {trades:>6}  {wr:>6}  {pf:>6}  {net:>8}")
+        return
+
+    # --delete-run: delete run data and exit (no startup machinery).
+    if args.delete_run:
+        from spirit.utils.run_manager import delete_run
+        try:
+            counts = delete_run(args.delete_run)
+            total = sum(counts.values())
+            if total == 0:
+                print(f"No data deleted for run-id {args.delete_run[:8]}... (not found).")
+            else:
+                print(f"Deleted run {args.delete_run[:8]}...:")
+                for table, n in counts.items():
+                    print(f"  {table}: {n} rows")
+        except ValueError as e:
+            print(f"Error: {e}")
+        return
+
+    # ------------------------------------------------------------------
+    # Below this line: live/paper/replay startup. All side effects
+    # (DB writes, preflight, exchange init, heartbeat, web server)
+    # belong here, not above.
+    # ------------------------------------------------------------------
     logger.info("---------- SPIRIT starting ----------")
 
     # Detect orphan / leftover Spirit processes before we do any work.
@@ -1502,77 +1587,6 @@ def main():
         start_web_server(port=web_port)
     else:
         update_state = None
-
-    # CLI
-    parser = argparse.ArgumentParser(description="SPIRIT Main Orchestration")
-    parser.add_argument('--csv', dest='data_source', action='store_const', const='csv', default='kraken')
-    parser.add_argument('--csv-path', type=str, default='test_data.csv')
-    parser.add_argument('--buffer-size', type=int, default=KRAKEN_OHLC_COUNT)
-    parser.add_argument('--mode', type=str, choices=['test', 'paper', 'live'], default='test')
-    parser.add_argument('--multi-interval', action='store_true')
-    parser.add_argument('--allow-multi-instance', action='store_true',
-                        help="Skip the 'another Spirit running?' guard at startup. "
-                             "Use only for genuine multi-instance setups (Pro tier).")
-    parser.add_argument('--duration', type=int, default=None)
-    parser.add_argument('--no-pause', action='store_true')
-    parser.add_argument('--exit-after-warmup', action='store_true')
-    parser.add_argument('--replay', action='store_true', help='PG replay backtest mode')
-    parser.add_argument('--start', type=str, default=None, help='Replay start date (YYYY-MM-DD)')
-    parser.add_argument('--end', type=str, default=None, help='Replay end date (YYYY-MM-DD)')
-    parser.add_argument('--with-monitoring', action='store_true',
-                        help='Include monitoring intervals (1m) in replay for dynamic exit')
-    parser.add_argument('--run-tag', type=str, default=None,
-                        help='Human-readable label for this replay run (e.g. "baseline")')
-    parser.add_argument('--run-id', type=str, default=None,
-                        help='Explicit run_id (UUID) to use instead of auto-generation. '
-                             'Used by CI replay-determinism gate so the diff script can '
-                             'find the rows without scraping logs (#522).')
-    parser.add_argument('--list-runs', action='store_true',
-                        help='Print replay run table and exit')
-    parser.add_argument('--delete-run', type=str, default=None, metavar='RUN_ID',
-                        help='Delete all data for a specific run ID and exit')
-    args = parser.parse_args()
-
-    # --list-runs: print run table and exit
-    if args.list_runs:
-        from spirit.utils.run_manager import list_runs
-        runs = list_runs(limit=30)
-        if not runs:
-            print("No replay runs found.")
-        else:
-            print(f"{'ID':>8}  {'Tag':<15}  {'Strategy':<15}  {'Pairs':<30}  "
-                  f"{'Range':<25}  {'Status':<10}  {'Trades':>6}  {'WR':>6}  {'PF':>6}  {'Net%':>8}")
-            print("-" * 160)
-            for r in runs:
-                rid = r['id'][:8] + '...'
-                tag = (r.get('tag') or '-')[:15]
-                strat = (r.get('strategy_name') or '-')[:15]
-                pairs_str = (r.get('pairs') or '-')[:30]
-                date_range = f"{r.get('start_date', '?')} to {r.get('end_date', '?')}"
-                status = r.get('status', '?')
-                trades = r.get('total_trades') or 0
-                wr = f"{float(r['win_rate']):.1%}" if r.get('win_rate') is not None else '-'
-                pf = f"{float(r['profit_factor']):.2f}" if r.get('profit_factor') is not None else '-'
-                net = f"{float(r['net_pnl_pct']):.2f}" if r.get('net_pnl_pct') is not None else '-'
-                print(f"{rid:>8}  {tag:<15}  {strat:<15}  {pairs_str:<30}  "
-                      f"{date_range:<25}  {status:<10}  {trades:>6}  {wr:>6}  {pf:>6}  {net:>8}")
-        return
-
-    # --delete-run: delete run data and exit
-    if args.delete_run:
-        from spirit.utils.run_manager import delete_run
-        try:
-            counts = delete_run(args.delete_run)
-            total = sum(counts.values())
-            if total == 0:
-                print(f"No data deleted for run-id {args.delete_run[:8]}... (not found).")
-            else:
-                print(f"Deleted run {args.delete_run[:8]}...:")
-                for table, n in counts.items():
-                    print(f"  {table}: {n} rows")
-        except ValueError as e:
-            print(f"Error: {e}")
-        return
 
     # --replay implies --csv-style flow (non-live) with paper mode
     if args.replay:

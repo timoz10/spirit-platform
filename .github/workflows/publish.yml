@@ -196,6 +196,43 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke — spirit --help has zero side effects (#758 contract)
+        # spirit --help / --version / unknown-flag-rejection MUST be
+        # read-only. Pre-#758 a fresh box `spirit --help` ran preflight,
+        # opened SQLite and wrote a heartbeat. Pin: clean HOME stays
+        # clean after `spirit --help`.
+        run: |
+          export SPIRIT_TIER=free
+          export SPIRIT_INSTANCE=help-smoke
+          export HOME=$(mktemp -d)
+          set +e
+          spirit --help > help.log 2>&1
+          STATUS=$?
+          set -e
+          cat help.log
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::spirit --help exited $STATUS, expected 0"
+            exit 1
+          fi
+          if grep -q "Traceback\|ModuleNotFoundError" help.log; then
+            echo "::error::spirit --help produced a Python traceback"
+            exit 1
+          fi
+          if grep -qE "SPIRIT starting|Pre-flight|\[VERSION\]|\[HEARTBEAT\]|GREEN LIGHT" help.log; then
+            echo "::error::spirit --help triggered startup machinery (must be read-only)"
+            grep -nE "SPIRIT starting|Pre-flight|\[VERSION\]|\[HEARTBEAT\]|GREEN LIGHT" help.log
+            exit 1
+          fi
+          if [ -e "$HOME/.spirit/help-smoke/spirit.db" ]; then
+            echo "::error::spirit --help created $HOME/.spirit/help-smoke/spirit.db (must be read-only)"
+            ls -la "$HOME/.spirit/help-smoke/"
+            exit 1
+          fi
+          if ! grep -q "usage:" help.log; then
+            echo "::error::spirit --help did not print usage text"
+            exit 1
+          fi
+
       - name: Smoke — spirit --list-runs (Free tier, empty SQLite — regression gate for #757)
         # rc9 failure mode: a public-allowlisted module lazy-imports a
         # DENIED module. Surfaces at first call, not at install. Catches
@@ -286,6 +323,7 @@ jobs:
           name: smoke-logs
           path: |
             preflight.log
+            help.log
             list-runs.log
             delete-run.log
             runtime.log
