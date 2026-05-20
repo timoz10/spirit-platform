@@ -196,6 +196,43 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke — spirit --help has zero side effects (#758 contract)
+        # spirit --help / --version / unknown-flag-rejection MUST be
+        # read-only. Per-platform validation: same step as install-smoke
+        # in tests.yml and smoke-runtime in publish.yml.
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          export SPIRIT_TIER=free
+          export SPIRIT_INSTANCE=help-smoke
+          export HOME=$(mktemp -d)
+          set +e
+          spirit --help > help.log 2>&1
+          STATUS=$?
+          set -e
+          cat help.log
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::spirit --help exited $STATUS on ${{ matrix.os }}, expected 0"
+            exit 1
+          fi
+          if grep -q "Traceback\|ModuleNotFoundError" help.log; then
+            echo "::error::spirit --help produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+          if grep -qE "SPIRIT starting|Pre-flight|\[VERSION\]|\[HEARTBEAT\]|GREEN LIGHT" help.log; then
+            echo "::error::spirit --help triggered startup machinery on ${{ matrix.os }} (must be read-only)"
+            grep -nE "SPIRIT starting|Pre-flight|\[VERSION\]|\[HEARTBEAT\]|GREEN LIGHT" help.log
+            exit 1
+          fi
+          if [ -e "$HOME/.spirit/help-smoke/spirit.db" ]; then
+            echo "::error::spirit --help created $HOME/.spirit/help-smoke/spirit.db on ${{ matrix.os }} (must be read-only)"
+            ls -la "$HOME/.spirit/help-smoke/"
+            exit 1
+          fi
+          if ! grep -q "usage:" help.log; then
+            echo "::error::spirit --help did not print usage text on ${{ matrix.os }}"
+            exit 1
+          fi
+
       - name: Smoke — spirit --list-runs (Free tier, empty SQLite — regression gate for #757)
         # rc9 failure mode: a public-allowlisted module (run_manager.py)
         # lazy-imports a DENIED module (db_connection.py). Per-platform
@@ -305,6 +342,7 @@ jobs:
           path: |
             health.log
             preflight.log
+            help.log
             list-runs.log
             delete-run.log
             runtime.log
