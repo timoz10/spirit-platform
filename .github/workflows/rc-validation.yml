@@ -516,11 +516,11 @@ jobs:
           p = pathlib.Path.home() / '.spirit' / 'setup-test' / 'spirit.yaml'
           src = p.read_text()
           if 'SPIRIT_TIER' in src:
-              src = re.sub(r'SPIRIT_TIER:\s*\S+', 'SPIRIT_TIER: subscription', src)
+              src = re.sub(r'SPIRIT_TIER:\s*\S+', 'SPIRIT_TIER: plus', src)
           else:
-              src = 'SPIRIT_TIER: subscription\n' + src
+              src = 'SPIRIT_TIER: plus\n' + src
           p.write_text(src)
-          print('Flipped SPIRIT_TIER → subscription for gateway-check coverage')
+          print('Flipped SPIRIT_TIER → plus for gateway-check coverage')
           "
 
           # Write a sentinel key to .env (NOT a real key — just enough
@@ -584,6 +584,110 @@ jobs:
           fi
           echo "  ✓ Paper trading line reflects actual tier (Bug B fix verified)"
 
+      # ---------------------------------------------------------------
+      # Gateway-success-branch coverage (#744, v2.2.3-rc5).
+      #
+      # The Bug A step above proves the REJECTION branch ("✗ Gateway
+      # features (key rejected)"). These two steps prove the SUCCESS
+      # branch ("✓ Gateway features ...") fires for both Plus and Pro
+      # capability sets — the only branch a real paying customer ever
+      # sees on first preflight, and the one that shipped invisibly
+      # untested through rc1 → rc4.
+      #
+      # Each step:
+      #   1. Warning-skip if the matching repo secret isn't available
+      #      (fork PRs, secret not yet provisioned).
+      #   2. Replace SPIRIT_API_KEY in the instance .env with the real
+      #      test key.
+      #   3. Run spirit-preflight, capture stdout+stderr.
+      #   4. grep -F for the success line. Fail the step if missing.
+      # ---------------------------------------------------------------
+      - name: Assert gateway success branch (internal_test_plus)
+        env:
+          SPIRIT_TEST_PLUS_KEY: ${{ secrets.SPIRIT_TEST_PLUS_KEY }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ -z "${SPIRIT_TEST_PLUS_KEY:-}" ]; then
+            echo "::warning::SPIRIT_TEST_PLUS_KEY not set — skipping Plus success-branch assertion (fork PR or unprovisioned)"
+            exit 0
+          fi
+
+          # Overwrite SPIRIT_API_KEY in the instance .env. Bug A step left
+          # the yaml on tier=subscription, which is the right shape for a
+          # Plus-equivalent key.
+          sed -i "s|^SPIRIT_API_KEY=.*|SPIRIT_API_KEY=${SPIRIT_TEST_PLUS_KEY}|" \
+            "$HOME/.spirit/setup-test/.env"
+
+          set +e
+          unset SPIRIT_API_KEY
+          spirit-preflight > success-plus-preflight.log 2>&1
+          STATUS=$?
+          set -e
+          cat success-plus-preflight.log
+
+          if grep -q "Traceback\|ModuleNotFoundError" success-plus-preflight.log; then
+            echo "::error::spirit-preflight crashed during Plus success-branch assertion"
+            exit 1
+          fi
+
+          # The success-branch text is fixed-string '✓ Gateway features' —
+          # grep -F avoids any regex interpretation of the checkmark.
+          if ! grep -F '✓ Gateway features' success-plus-preflight.log; then
+            echo "::error::Expected '✓ Gateway features' in preflight output for internal_test_plus, not found (status=${STATUS})"
+            echo "::error::Either the key has been revoked, the role lost its capability set, or the success-branch text changed."
+            exit 1
+          fi
+          echo "  ✓ Plus success-branch line present"
+
+      - name: Assert gateway success branch (internal_test_pro)
+        env:
+          SPIRIT_TEST_PRO_KEY: ${{ secrets.SPIRIT_TEST_PRO_KEY }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ -z "${SPIRIT_TEST_PRO_KEY:-}" ]; then
+            echo "::warning::SPIRIT_TEST_PRO_KEY not set — skipping Pro success-branch assertion (fork PR or unprovisioned)"
+            exit 0
+          fi
+
+          # Flip the yaml to tier=pro so preflight evaluates the Pro
+          # capability surface (internal_test_pro mirrors pro).
+          python3 -c "
+          import pathlib, re
+          p = pathlib.Path.home() / '.spirit' / 'setup-test' / 'spirit.yaml'
+          src = p.read_text()
+          if 'SPIRIT_TIER' in src:
+              src = re.sub(r'SPIRIT_TIER:\s*\S+', 'SPIRIT_TIER: pro', src)
+          else:
+              src = 'SPIRIT_TIER: pro\n' + src
+          p.write_text(src)
+          "
+
+          sed -i "s|^SPIRIT_API_KEY=.*|SPIRIT_API_KEY=${SPIRIT_TEST_PRO_KEY}|" \
+            "$HOME/.spirit/setup-test/.env"
+
+          set +e
+          unset SPIRIT_API_KEY
+          spirit-preflight > success-pro-preflight.log 2>&1
+          STATUS=$?
+          set -e
+          cat success-pro-preflight.log
+
+          if grep -q "Traceback\|ModuleNotFoundError" success-pro-preflight.log; then
+            echo "::error::spirit-preflight crashed during Pro success-branch assertion"
+            exit 1
+          fi
+
+          if ! grep -F '✓ Gateway features' success-pro-preflight.log; then
+            echo "::error::Expected '✓ Gateway features' in preflight output for internal_test_pro, not found (status=${STATUS})"
+            echo "::error::Either the key has been revoked, the role lost its capability set, or the success-branch text changed."
+            exit 1
+          fi
+          echo "  ✓ Pro success-branch line present"
+
       - name: Upload upgrade logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -595,6 +699,8 @@ jobs:
             post-preflight.log
             autodetect-preflight.log
             envload-preflight.log
+            success-plus-preflight.log
+            success-pro-preflight.log
           retention-days: 14
 
   rc-verdict:
