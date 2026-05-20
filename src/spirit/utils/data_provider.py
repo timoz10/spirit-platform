@@ -7,11 +7,11 @@ pg-mode was removed in the platform pivot (#340).
 Framework / IP boundary (#340):
   - FrameworkDataProvider: data any Spirit instance needs (OHLC, state,
     performance, heartbeats, pairs). Used by both free-tier and
-    subscription-tier Spirit.
+    paid-tier Spirit.
   - IPDataProvider: data produced by our IP pipeline (D-Limit zones,
     bounces, regime-derived indicators, risk gate, theses, scorer,
-    tumblers, trajectories). Available only to subscription-tier Spirit.
-  - DataProvider: union of both, satisfied by the subscription-tier
+    tumblers, trajectories). Available only to paid-tier Spirit.
+  - DataProvider: union of both, satisfied by the paid-tier
     ApiDataProvider. Free-tier Spirit will implement FrameworkDataProvider
     only (backed by local SQLite — future work).
 
@@ -40,8 +40,8 @@ logger = get_logger("data_provider")
 class FrameworkDataProvider(Protocol):
     """Framework data access: OHLC, state, performance, heartbeats, pairs.
 
-    Any Spirit instance — free-tier or subscription — uses this interface.
-    Free-tier implementations back it with local SQLite; subscription-tier
+    Any Spirit instance — free-tier or paid — uses this interface.
+    Free-tier implementations back it with local SQLite; paid-tier
     backs it with the API gateway.
     """
 
@@ -439,7 +439,7 @@ class IPDataProvider(Protocol):
 
 
 # =====================================================================
-# Combined interface — subscription tier implements both
+# Combined interface — paid tier implements both
 # =====================================================================
 
 
@@ -447,9 +447,9 @@ class IPDataProvider(Protocol):
 class DataProvider(FrameworkDataProvider, IPDataProvider, Protocol):
     """Combined framework + IP data access.
 
-    Satisfied by the subscription-tier ApiDataProvider. Free-tier Spirit
+    Satisfied by the paid-tier ApiDataProvider. Free-tier Spirit
     will only depend on FrameworkDataProvider; code that uses this union
-    type is implicitly subscription-only.
+    type is implicitly paid-tier-only.
     """
     ...
 
@@ -471,8 +471,8 @@ def get_data_provider() -> DataProvider:
                               today) + a SqliteDataProvider keyed under
                               `~/.spirit/<instance>/spirit.db`. No API key
                               required, no gateway calls.
-      - `subscription`/`pro`/unset → ApiDataProvider against the gateway,
-                                     same path as before.
+      - `plus`/`pro`/unset → ApiDataProvider against the gateway,
+                             same path as before.
     """
     global _provider
     if _provider is not None:

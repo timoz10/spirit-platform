@@ -433,7 +433,7 @@ def _check_env_vars(skip_kraken: bool = False, tier: str = "", diagnostic: bool 
     Args:
         skip_kraken: Caller already knows Kraken keys aren't needed (e.g.
             paper/replay mode). KRAKEN_API_KEY is not checked at all.
-        tier: 'free' / 'subscription' / 'pro' / ''. Determines whether
+        tier: 'free' / 'plus' / 'pro' / ''. Determines whether
             SPIRIT_API_KEY is required.
         diagnostic: When True (standalone preflight), report missing
             optional keys as WARN with informative messages rather than
@@ -544,7 +544,7 @@ def run_preflight(
 
     Args:
         skip_kraken: If True, skip Kraken key check (e.g. paper/replay mode).
-        tier: Spirit tier ('free' / 'subscription' / 'pro' / ''). When None
+        tier: Spirit tier ('free' / 'plus' / 'pro' / ''). When None
             (default), resolved from SPIRIT_TIER env/config. Free tier skips
             the gateway connectivity + SPIRIT_API_KEY checks — Free runs
             entirely local-plus-exchange-direct and never reaches the gateway.
@@ -610,7 +610,7 @@ def run_preflight(
 def _paper_trading_label(tier: str) -> str:
     """Short tier-aware descriptor for the paper-trading line."""
     # rc4 Bug B fix: don't leak "Free tier" when the actual tier is paid.
-    if tier in ("subscription", "plus"):
+    if tier == "plus":
         return "Plus tier, gateway-backed"
     if tier == "pro":
         return "Pro tier, gateway-backed"
