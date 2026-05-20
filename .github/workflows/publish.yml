@@ -93,6 +93,14 @@ jobs:
           import re, pathlib
           p = pathlib.Path('${TARGET}')
           src = p.read_text()
+          # Check the regex MATCHES the version line. We can't compare
+          # new == src for a 'no match' signal — on bare-version tags
+          # where the on-disk version already equals the tag (the GA
+          # path), re.sub finds the line but produces identical output,
+          # tripping a false 'layout changed?' alarm and blocking the
+          # release. Hit on v2.2.3 (2026-05-20).
+          if not re.search(r'^version\s*=\s*\"[^\"]*\"', src, flags=re.M):
+              raise SystemExit('::error::failed to inject version — pyproject layout changed?')
           new = re.sub(
               r'^version\s*=\s*\"[^\"]*\"',
               f'version = \"${VERSION}\"',
@@ -100,8 +108,6 @@ jobs:
               count=1,
               flags=re.M,
           )
-          if new == src:
-              raise SystemExit('::error::failed to inject version — pyproject layout changed?')
           p.write_text(new)
           "
           grep '^version = ' "${TARGET}"
