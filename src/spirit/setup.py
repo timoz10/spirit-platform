@@ -110,7 +110,16 @@ def _ask_select(label: str, choices: Sequence[tuple[str, str]],
         if ans is None:
             sys.exit(1)
         return ans
-    # Fallback — show numbered list, ask for the number, default on blank.
+    # Fallback — show numbered list, accept the number OR the value
+    # string OR blank-for-default. Accepting the value string (#766)
+    # tolerates scripted-stdin sequences that pass "free" / "paid"
+    # instead of "1" / "2" — common-sense input that used to be
+    # silently rejected and consume an extra stdin line, shifting
+    # every subsequent prompt.
+    #
+    # EOFError aborts the loop instead of spinning forever — a piped
+    # input that runs out before we get a valid selection falls
+    # through to the default (if any) or raises SystemExit.
     print()
     print(label)
     valid_values: list[str] = []
@@ -122,20 +131,47 @@ def _ask_select(label: str, choices: Sequence[tuple[str, str]],
             default_idx_display = str(i)
         print(f"  {i}. {display}{marker}")
         valid_values.append(value)
-    while True:
+    valid_value_set = set(valid_values)
+    attempts = 0
+    max_attempts = 3   # bounded — prevents infinite consumption of stdin
+    while attempts < max_attempts:
+        attempts += 1
         prompt = (f"Choice [1-{len(choices)}]"
                   + (f" [{default_idx_display}]" if default_idx_display else "")
                   + ": ")
-        raw = input(prompt).strip()
+        try:
+            raw = input(prompt).strip()
+        except EOFError:
+            # Piped stdin ran out. Fall through to default if we have
+            # one; otherwise abort cleanly (don't crash with a traceback).
+            if default_idx_display:
+                print(prompt + f"(EOF — using default '{valid_values[int(default_idx_display) - 1]}')")
+                return valid_values[int(default_idx_display) - 1]
+            print(prompt + "(EOF — no default available, aborting)")
+            sys.exit(1)
         if not raw and default_idx_display:
             return valid_values[int(default_idx_display) - 1]
+        # Numeric index
         try:
             idx = int(raw)
             if 1 <= idx <= len(choices):
                 return valid_values[idx - 1]
         except ValueError:
             pass
-        print(f"  Please enter a number between 1 and {len(choices)}.")
+        # Value string (e.g. "free" / "paid" / "kraken")
+        if raw in valid_value_set:
+            return raw
+        print(
+            f"  Please enter a number between 1 and {len(choices)}, "
+            f"or one of: {', '.join(valid_values)}."
+        )
+    # Exhausted retries — fall through to default rather than spin forever.
+    if default_idx_display:
+        print(f"  Too many invalid inputs; using default "
+              f"'{valid_values[int(default_idx_display) - 1]}'.")
+        return valid_values[int(default_idx_display) - 1]
+    print("  Too many invalid inputs and no default — aborting.")
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +181,25 @@ def _ask_select(label: str, choices: Sequence[tuple[str, str]],
 
 
 def _write_env(env_path: str, values: dict):
-    """Write or update .env file with key=value pairs."""
-    existing = {}
+    """Write or update .env file with key=value pairs.
+
+    Defensive (#766): refuses to create a 0-byte .env file. If the
+    caller passes an empty `values` dict AND no .env exists, this is
+    a no-op — the customer is better off with no file than an empty
+    one (preflight reads from shell env in that case). If `values`
+    is empty but a .env already exists, we also no-op rather than
+    rewriting the same content; nothing has changed, no reason to
+    touch the file.
+
+    Drops empty-string values (`SPIRIT_API_KEY=`) before writing —
+    those leak no-op lines that downstream tools can't distinguish
+    from "user explicitly cleared this key".
+    """
+    # Drop empty-string values — same intent as caller's `if value:`
+    # gate, but enforced once here.
+    values = {k: v for k, v in values.items() if v not in ("", None)}
+
+    existing: dict = {}
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             for line in f:
@@ -154,6 +207,14 @@ def _write_env(env_path: str, values: dict):
                 if "=" in line and not line.startswith("#"):
                     k, v = line.split("=", 1)
                     existing[k.strip()] = v.strip()
+
+    if not values and not existing:
+        # Nothing to write, nothing to preserve. Avoid creating the
+        # 0-byte file that broke probe-3 on v2.2.3-rc9.
+        return
+    if not values and existing:
+        # No new values, file already has content. Leave untouched.
+        return
 
     existing.update(values)
 
@@ -650,7 +711,12 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir, *, instance=No
 
     yaml_values["SPIRIT_API_URL"] = api_url
     yaml_values["SPIRIT_INSTANCE"] = instance
-    env_values["SPIRIT_API_KEY"] = api_key
+    # Only write the key if the user actually provided one (#766).
+    # Mirrors the Free path's `if api_key:` pattern and avoids leaking
+    # a meaningless `SPIRIT_API_KEY=` line into .env when the user
+    # skipped the prompt.
+    if api_key:
+        env_values["SPIRIT_API_KEY"] = api_key
 
     # --- Exchange ---
     print()
@@ -713,8 +779,12 @@ def _setup_paid_tier(project_root, env_path, yaml_path, yaml_dir, *, instance=No
     _write_yaml(yaml_path, yaml_values)
     print(f"  Written: {yaml_path}")
 
-    _write_env(env_path, env_values)
-    print(f"  Written: {env_path}")
+    # Mirror the Free path's guard (#766). _write_env is now defensive
+    # too, but a redundant guard at the call site makes the "we wrote
+    # .env" line accurate.
+    if env_values:
+        _write_env(env_path, env_values)
+        print(f"  Written: {env_path}")
 
     print()
     print("=" * 60)
