@@ -196,6 +196,60 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke — spirit --list-runs (Free tier, empty SQLite — regression gate for #757)
+        # rc9 failure mode: a public-allowlisted module (run_manager.py)
+        # lazy-imports a DENIED module (db_connection.py). Per-platform
+        # validation here — same step as install-smoke in tests.yml and
+        # smoke-runtime in publish.yml.
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          export SPIRIT_TIER=free
+          export SPIRIT_INSTANCE=ci-smoke
+          # SPIRIT_STRATEGY required by in-run preflight pre-#758 (no-op
+          # post-#758 because argparse exits first).
+          export SPIRIT_STRATEGY=macd_demo
+          set +e
+          spirit --list-runs > list-runs.log 2>&1
+          STATUS=$?
+          set -e
+          cat list-runs.log
+          if grep -q "Traceback\|ModuleNotFoundError" list-runs.log; then
+            echo "::error::spirit --list-runs produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::spirit --list-runs exited $STATUS on ${{ matrix.os }}, expected 0"
+            exit 1
+          fi
+          if ! grep -q "No replay runs found" list-runs.log; then
+            echo "::error::expected 'No replay runs found' on empty Free install (${{ matrix.os }})"
+            exit 1
+          fi
+
+      - name: Smoke — spirit --delete-run on nonexistent id (Free tier — #757 contract)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          export SPIRIT_TIER=free
+          export SPIRIT_INSTANCE=ci-smoke
+          export SPIRIT_STRATEGY=macd_demo
+          set +e
+          spirit --delete-run nonexistent-run-id-xyz > delete-run.log 2>&1
+          STATUS=$?
+          set -e
+          cat delete-run.log
+          if grep -q "Traceback\|ModuleNotFoundError" delete-run.log; then
+            echo "::error::spirit --delete-run produced a Python traceback on ${{ matrix.os }}"
+            exit 1
+          fi
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::spirit --delete-run exited $STATUS on nonexistent id, ${{ matrix.os }}, expected 0"
+            exit 1
+          fi
+          if ! grep -q "not found" delete-run.log; then
+            echo "::error::expected 'not found' message for nonexistent run id (${{ matrix.os }})"
+            exit 1
+          fi
+
       - name: Smoke — spirit --mode test for 5 minutes
         # Longer runtime than the per-PR gate (30s) because RC validation
         # is the LAST gate before release — we want maximum confidence.
@@ -251,6 +305,8 @@ jobs:
           path: |
             health.log
             preflight.log
+            list-runs.log
+            delete-run.log
             runtime.log
           retention-days: 14
 

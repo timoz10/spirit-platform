@@ -1563,9 +1563,13 @@ def main():
         from spirit.utils.run_manager import delete_run
         try:
             counts = delete_run(args.delete_run)
-            print(f"Deleted run {args.delete_run[:8]}...:")
-            for table, n in counts.items():
-                print(f"  {table}: {n} rows")
+            total = sum(counts.values())
+            if total == 0:
+                print(f"No data deleted for run-id {args.delete_run[:8]}... (not found).")
+            else:
+                print(f"Deleted run {args.delete_run[:8]}...:")
+                for table, n in counts.items():
+                    print(f"  {table}: {n} rows")
         except ValueError as e:
             print(f"Error: {e}")
         return
