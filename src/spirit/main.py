@@ -1395,8 +1395,22 @@ def main():
     # `spirit --help` read-only contract.
     # ------------------------------------------------------------------
     parser = argparse.ArgumentParser(description="SPIRIT Main Orchestration")
-    parser.add_argument('--csv', dest='data_source', action='store_const', const='csv', default='kraken')
-    parser.add_argument('--csv-path', type=str, default='test_data.csv')
+    # --csv-input is the v2.2.3+ primary spelling. --csv is the legacy
+    # alias (#759 — the original name read like "export to CSV"). Both
+    # set data_source='csv'; the path comes from --csv-path. Validation
+    # at the bottom of this argparse block rejects --csv-input outside
+    # test mode and checks the path exists.
+    parser.add_argument(
+        '--csv-input', '--csv', dest='data_source', action='store_const',
+        const='csv', default='kraken',
+        help='Read OHLC from a CSV file (replay-style input). Requires '
+             '--mode test. Use --csv-path to point at the file.',
+    )
+    parser.add_argument(
+        '--csv-path', type=str, default='test_data.csv',
+        help='Path to the CSV file when --csv-input is set. '
+             'Validated for existence at startup.',
+    )
     parser.add_argument('--buffer-size', type=int, default=KRAKEN_OHLC_COUNT)
     parser.add_argument('--mode', type=str, choices=['test', 'paper', 'live'], default='test')
     parser.add_argument('--multi-interval', action='store_true')
@@ -1422,6 +1436,33 @@ def main():
     parser.add_argument('--delete-run', type=str, default=None, metavar='RUN_ID',
                         help='Delete all data for a specific run ID and exit')
     args = parser.parse_args()
+
+    # ------------------------------------------------------------------
+    # Argparse-time validation (#759). All checks here exit non-zero
+    # with a clean parser.error() — never a Python traceback. Runs
+    # before --list-runs/--delete-run short-circuits so a malformed
+    # combination always surfaces, regardless of intent.
+    # ------------------------------------------------------------------
+    if args.data_source == 'csv':
+        # CSV input is for backtest/smoke only — paper/live are
+        # forward-looking and would silently use static data.
+        if args.mode != 'test':
+            parser.error(
+                f"--csv-input requires --mode test (got --mode {args.mode}). "
+                f"CSV input is a backtest data source; --mode paper / live "
+                f"expect a live exchange feed. For replay over historical "
+                f"data, use --replay --start YYYY-MM-DD --end YYYY-MM-DD."
+            )
+        # Validate the path exists + is a file (not a directory).
+        # Catches the rc9 footgun where customers pointed --csv-path at
+        # /tmp/output.csv expecting an export and got a raw FileNotFoundError
+        # from pandas.read_csv.
+        if not os.path.isfile(args.csv_path):
+            parser.error(
+                f"--csv-path: file not found or not a regular file: "
+                f"{args.csv_path!r}. --csv-input reads OHLC from this file; "
+                f"it does NOT create or export to it."
+            )
 
     # --list-runs: print run table and exit (no startup machinery).
     if args.list_runs:
