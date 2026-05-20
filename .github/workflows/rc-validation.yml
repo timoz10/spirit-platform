@@ -243,7 +243,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rc-smoke-${{ matrix.os }}-${{ matrix.container || 'host' }}
+          # Container suffix dropped — `python:3.12-slim-bookworm` contains a
+          # colon, which GitHub Actions rejects as an invalid artifact name.
+          # matrix.os is unique per cell so artifact-name collision is not
+          # possible.
+          name: rc-smoke-${{ matrix.os }}
           path: |
             health.log
             preflight.log
@@ -465,6 +469,12 @@ jobs:
           # resolve_active_instance() and logger._resolve_instance().
           # This step is the regression gate.
           export PATH="$HOME/.local/bin:$PATH"
+
+          # Remove the upgrade-test synthetic dir from the earlier step —
+          # it was a fixture for the upgrade-path tests; the autodetect
+          # assertion below requires exactly one ~/.spirit/<name>/ dir
+          # (the freshly-setup-by-the-wizard `setup-test`).
+          rm -rf "$HOME/.spirit/upgrade-test"
 
           # Make sure no other instances exist that would break the autodetect.
           ls -la "$HOME/.spirit/"
