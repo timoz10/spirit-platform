@@ -135,7 +135,7 @@ Get the singleton via `from spirit.utils.data_provider import get_data_provider;
 | `write_heartbeat` | `(daemon_id, *, instance, status="ok", metadata=None, run_id="live")` | `int` |
 | `get_pairs` | `(instance=None)` | `list[dict]` — active pairs registry |
 
-### IP (subscription + pro tiers only — `403` on free)
+### IP (plus + pro tiers only — `403` on free)
 
 | Method | Signature | Purpose |
 |--------|-----------|---------|
@@ -232,8 +232,8 @@ When `uses_risk_gate = False` (default) the strategy fully owns sizing — set `
 | Tier | DataProvider methods unlocked |
 |------|-------------------------------|
 | `free` | All Framework methods. **All IP methods → 403.** Trades stored in local SQLite (no `/v1/performance` writes). |
-| `subscription` | Framework + D-Limit (`get_dlimit*`, `get_zones`, `get_zone_touches`, `get_bounce_events`, `get_consolidation`), bounce_reference, calibration reads. Cloud-side trade storage. Live mode allowed. |
-| `pro` | Subscription + scorer outputs, full orderbook (`get_orderbook*`), wall lifecycles, IP write methods. |
+| `plus` | Framework + D-Limit (`get_dlimit*`, `get_zones`, `get_zone_touches`, `get_bounce_events`, `get_consolidation`), bounce_reference, calibration reads. Cloud-side trade storage. Live mode allowed. |
+| `pro` | Plus + scorer outputs, full orderbook (`get_orderbook*`), wall lifecycles, IP write methods. |
 
 If a method 403s, the response includes the required tier — propagate as a clear error, don't retry.
 

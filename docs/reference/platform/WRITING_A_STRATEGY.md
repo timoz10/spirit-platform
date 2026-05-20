@@ -136,8 +136,8 @@ Different paid tiers see different endpoints. The full matrix is in [`PERMISSION
 | Tier | What you can pull |
 |------|-------------------|
 | `free` | OHLC (direct from exchange), pair registry, your own state. Local SQLite for trades. |
-| `subscription` | Adds D-Limit indicators (60m + 15m), zones, zone touches, bounce events, bounce physics, cloud-side trade storage. |
-| `pro` | Subscription + scorer outputs, full orderbook history, wall lifecycles, write access. |
+| `plus` | Adds D-Limit indicators (60m + 15m), zones, zone touches, bounce events, bounce physics, cloud-side trade storage. |
+| `pro` | Plus + scorer outputs, full orderbook history, wall lifecycles, write access. |
 
 If you call an endpoint your tier doesn't unlock, you get a `403`. Plan your data needs around your tier.
 

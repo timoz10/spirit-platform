@@ -15,7 +15,7 @@ Spirit's main process has at least three threads that hit
 `get_data_provider()` (main eval, data-source heartbeat tick, WS event
 handler under `_eval_locks`); the lock serialises writes so the shared
 connection stays consistent. Free tier does not run pipeline daemons —
-those live in separate processes in subscription mode and are not part
+those live in separate processes in paid-tier mode and are not part
 of the Free-tier ship — so multi-process file contention is not a
 concern at v2.3.0.
 

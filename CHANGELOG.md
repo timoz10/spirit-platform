@@ -17,7 +17,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed (BREAKING)
+
+- **Renamed paid tier role from `subscription` to `plus`** to match the public-facing tier name. (#747)
+  - `/v1/whoami` now returns `"role": "plus"` for keys that previously returned `"role": "subscription"`.
+  - `SPIRIT_TIER=subscription` in `~/.spirit/<instance>/.env` no longer works; update to `SPIRIT_TIER=plus`.
+  - Existing portal-issued keys are auto-migrated (migration 039) — no key reissue required.
+  - The Ghost-side slug `subscription` is kept as a back-compat alias in `GHOST_TIER_SLUG_MAP` for any historic Ghost rows that still carry it.
+  - Rationale: the DB role name (`subscription`) and the public name (`Plus`) diverged at v2.2.0 (#481). Customer surfaces (`/v1/whoami`, `.env`, CSS class) leaked the legacy name. Pre-launch (zero paying customers) is the cheapest time to clean it up.
+
+### Added
+
+- **Internal test roles `internal_test_plus` and `internal_test_pro`** for CI gateway-success-branch coverage (#744). See `docs/reference/infrastructure/INTERNAL_KEYS_MANAGEMENT.md` for the SOP. Backed by migration 038.
 
 
 ## [2.2.3] — 2026-05-19
