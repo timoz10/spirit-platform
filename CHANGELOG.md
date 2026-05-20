@@ -20,6 +20,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **Multi-instance guard now fires for pipx-installed customers (CRITICAL real-money safety fix).** Pre-#760 `runtime_lock.detect_other_spirit_processes()` used a pgrep regex (`\bspirit\.main\b`) that only matched the dev `python -m spirit.main` invocation. Every pipx-installed customer running `/.local/bin/spirit ...` has argv that contains the word `spirit` but never the literal `spirit.main` — pgrep returned empty, the guard fired for nobody. In live mode, two daemons on the same instance would have issued duplicate orders to the exchange. The regex now matches both patterns (`spirit\.main` for dev, `\bspirit\b` for installed), and a tightened stage-2 argv filter rejects the inevitable false positives (`spirit-health`, `spirit-preflight`, `spirit-setup`, shell wrappers, random python processes that mention "spirit" in argv). 33 unit tests pin every case in the detection matrix. Contract documented in `docs/reference/MODULE_CONTRACTS.md`. (#760)
+- **`spirit-setup` no longer leaves 0-byte `.env` files behind (defensive hardening for #766).** Three independent fixes:
+  - `_ask_select` now accepts the value string (`free`, `paid`, `kraken`) in addition to the numeric index — pre-#766 a value-string input was silently rejected and consumed an extra stdin line, shifting all subsequent prompts. Invalid inputs are also bounded (max 3 retries) before falling through to the default rather than spinning forever; EOF falls through to default cleanly.
+  - The paid path no longer writes `SPIRIT_API_KEY=` with an empty value when the user provides no key. Mirrors the Free path's `if api_key:` pattern.
+  - `_write_env` refuses to create or rewrite a 0-byte `.env` file. Empty-string values are dropped before writing; if both existing content and new values are empty, the file is left alone (or never created).
+  - Severity: LOW per the issue's gate (interactive customers using `questionary` were never affected — these bugs only triggered via scripted-stdin in CI scaffolding). 14 unit tests pin all three fixes.
+  - **Note for existing users:** if you have a 0-byte `.env` from a pre-#766 wizard run, the new wizard won't touch it (no destructive overwrites). Remove it manually if it's bothering you — `spirit-preflight` reads from shell env when the file is missing or empty. (#766)
 
 
 ## [2.2.3] — 2026-05-20
