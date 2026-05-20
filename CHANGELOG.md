@@ -17,21 +17,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
+_No unreleased changes yet._
 
-- **Renamed `--csv` to `--csv-input`** to make the intent clear: this flag reads OHLC from a CSV file (replay-style backtest input). It does NOT export to CSV — the original name read like an export and customers running `--csv --csv-path /tmp/output.csv` got a raw `FileNotFoundError` from pandas. The legacy `--csv` flag still works as a silent alias (no deprecation warning at this pre-launch stage; revisit in v2.3.x). A separate `--csv-export` for trade-history export is tracked as an enhancement, not in this fix. (#759)
 
-### Fixed
+## [2.2.3] — 2026-05-20
 
-- **`spirit --csv-input` now validates its arguments at argparse time.** Two new guards:
-  - **`--csv-input` is rejected outside `--mode test`** — paper/live are forward-looking and would silently use static data. Suggests `--replay --start --end` for historical replays.
-  - **`--csv-path` must point at an existing regular file.** Missing/directory paths produce a clean `parser.error()` ("file not found or not a regular file: ...") instead of a `pandas.read_csv` traceback at the start of the run.
-  - Both checks run before any startup machinery (post-#758 argparse-first ordering), so the user sees the error before any DB write or preflight runs. (#759)
+### GA-blocker fixes (post-rc9, included in the published 2.2.3 wheel)
+
+- **Multi-instance guard now fires for pipx-installed customers (CRITICAL real-money safety fix).** Pre-#760 `runtime_lock.detect_other_spirit_processes()` used a pgrep regex (`\bspirit\.main\b`) that only matched the dev `python -m spirit.main` invocation. Every pipx-installed customer running `/.local/bin/spirit ...` has argv that contains the word `spirit` but never the literal `spirit.main` — pgrep returned empty, the guard fired for nobody. In live mode, two daemons on the same instance would have issued duplicate orders to the exchange. The regex now matches both patterns (`spirit\.main` for dev, `\bspirit\b` for installed), and a tightened stage-2 argv filter rejects the inevitable false positives (`spirit-health`, `spirit-preflight`, `spirit-setup`, shell wrappers, random python processes that mention "spirit" in argv). 33 unit tests pin every case in the detection matrix. Contract documented in `docs/reference/MODULE_CONTRACTS.md`. (#760)
 - **`spirit --help` is now read-only.** Pre-#758 the CLI ran full preflight, initialised the Kraken exchange provider, opened SQLite, wrote a version row to `spirit_state`, and recorded a heartbeat — all BEFORE argparse printed the help text. A new user typing `spirit --help` to discover commands saw network errors, mutated their state DB, and (on a Free box with no Kraken keys) got scary WARN lines from the exchange init. Now argparse runs first thing in `main()`; `--help`, `--version`, unknown-flag rejection, `--list-runs` and `--delete-run` all return cleanly without touching DB, network, or exchange. Same pattern as #733's earlier fix for `spirit-setup`. (#758)
 - **CI gates the read-only contract.** Three workflows (`tests.yml` install-smoke, `publish.yml` smoke-runtime, `rc-validation.yml` install-matrix) now assert that `spirit --help` on a fresh `HOME` produces no `~/.spirit/<instance>/spirit.db` file, no startup-machinery log lines, and exits 0. Contract documented in `docs/reference/MODULE_CONTRACTS.md`. (#758)
 - **`spirit --list-runs` no longer crashes on Free tier.** v2.2.3-rc1..rc9 all shipped with a `ModuleNotFoundError: spirit.utils.db_connection` whenever a Free-tier user ran `--list-runs` or `--delete-run` — the lazy import inside `run_manager.py` was reaching a module excluded from the public mirror. Both flags now derive the run list from local SQLite (`strategy_performance` GROUP BY `run_id`) on Free, and read the PG `replay_runs` registry on Plus/Pro. `--delete-run` on a nonexistent run id now prints a clean "not found" message and exits 0 instead of pretending it deleted 0 rows. (#757)
 - **`run_manager` now has a CI-enforced exit-code contract.** Three independent gates assert `spirit --list-runs` and `spirit --delete-run` exit cleanly on a Free install: per-PR (tests.yml install-smoke), pre-publish (publish.yml smoke-runtime), and per-RC tag multi-platform (rc-validation.yml install-matrix). Catches the broader bug class of "public-allowlisted module lazy-imports a denied module" for any future similar flag. See `docs/reference/MODULE_CONTRACTS.md`. (#757)
-- **Multi-instance guard now fires for pipx-installed customers (CRITICAL real-money safety fix).** Pre-#760 `runtime_lock.detect_other_spirit_processes()` used a pgrep regex (`\bspirit\.main\b`) that only matched the dev `python -m spirit.main` invocation. Every pipx-installed customer running `/.local/bin/spirit ...` has argv that contains the word `spirit` but never the literal `spirit.main` — pgrep returned empty, the guard fired for nobody. In live mode, two daemons on the same instance would have issued duplicate orders to the exchange. The regex now matches both patterns (`spirit\.main` for dev, `\bspirit\b` for installed), and a tightened stage-2 argv filter rejects the inevitable false positives (`spirit-health`, `spirit-preflight`, `spirit-setup`, shell wrappers, random python processes that mention "spirit" in argv). 33 unit tests pin every case in the detection matrix. Contract documented in `docs/reference/MODULE_CONTRACTS.md`. (#760)
+- **Renamed `--csv` to `--csv-input`** to make the intent clear: this flag reads OHLC from a CSV file (replay-style backtest input). It does NOT export to CSV — the original name read like an export and customers running `--csv --csv-path /tmp/output.csv` got a raw `FileNotFoundError` from pandas. The legacy `--csv` flag still works as a silent alias (no deprecation warning at this pre-launch stage; revisit in v2.3.x). A separate `--csv-export` for trade-history export is tracked as an enhancement, not in this fix. (#759)
+- **`spirit --csv-input` now validates its arguments at argparse time.** Two new guards:
+  - **`--csv-input` is rejected outside `--mode test`** — paper/live are forward-looking and would silently use static data. Suggests `--replay --start --end` for historical replays.
+  - **`--csv-path` must point at an existing regular file.** Missing/directory paths produce a clean `parser.error()` ("file not found or not a regular file: ...") instead of a `pandas.read_csv` traceback at the start of the run.
+  - Both checks run before any startup machinery (post-#758 argparse-first ordering), so the user sees the error before any DB write or preflight runs. (#759)
 - **`spirit-setup` no longer leaves 0-byte `.env` files behind (defensive hardening for #766).** Three independent fixes:
   - `_ask_select` now accepts the value string (`free`, `paid`, `kraken`) in addition to the numeric index — pre-#766 a value-string input was silently rejected and consumed an extra stdin line, shifting all subsequent prompts. Invalid inputs are also bounded (max 3 retries) before falling through to the default rather than spinning forever; EOF falls through to default cleanly.
   - The paid path no longer writes `SPIRIT_API_KEY=` with an empty value when the user provides no key. Mirrors the Free path's `if api_key:` pattern.
@@ -43,8 +45,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The `replay_runs` registry table doesn't exist on Free — runs are derived from `strategy_performance`. As a result, the `Tag`, `PF` (profit factor) and `git_hash` columns render as `-` in `--list-runs` output on Free. Win-rate, trade count, net PnL %, date range and pairs are all populated. Paid tiers show all columns.
 
-
-## [2.2.3] — 2026-05-20
+---
 
 ### Changed (BREAKING)
 
