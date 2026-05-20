@@ -55,47 +55,81 @@ def _argv_looks_like_spirit(argv: list[str]) -> bool:
     """Return True if argv is from a real Spirit Python process.
 
     Distinguishes:
-      - `python3 -m spirit.main ...` (dev launch)             → True
+      - `python3 -m spirit.main ...` (dev launch)              → True
       - `python3 /path/to/spirit/main.py ...`                  → True
-      - `/venv/bin/spirit ...` (installed console script)      → True
+      - `python3 /venv/bin/spirit ...` (pipx shim invocation)  → True
+      - `/venv/bin/spirit ...` (kernel records argv[0] as the
+        shim path itself, e.g. some packaging tools)           → True
       - `bash -c "... python3 -m spirit.main ..."`             → False
       - `tmux new-session "... python3 -m spirit.main ..."`    → False
       - `sh -c "..."` / `setsid ...` and other wrappers        → False
+      - `/venv/bin/spirit-health`, `spirit-preflight` etc.     → False
+      - random `python3 some_script.py spirit_word ...`        → False
 
     The shell-wrapper cases are why this exists: `pgrep -f` matches the
     pattern against the FULL joined argv of every process, so any
-    parent shell that mentions `spirit.main` in its argv string is a
+    parent shell that mentions `spirit` in its argv string is a
     false positive. Discriminating by argv[0] separates the actual
     Python interpreter from shells/launchers that merely reference it.
+
+    The python branch was tightened in #760: pgrep's regex now also
+    matches via ``\\bspirit\\b`` (to catch the pipx-installed entrypoint
+    where /proc/PID/cmdline has argv = ['/venv/bin/python',
+    '/venv/bin/spirit', ...]). For the python branch we now verify a
+    spirit-related arg is actually present in argv[1:], so a random
+    python process whose argv happens to mention "spirit" somewhere
+    isn't counted.
     """
     if not argv:
         return False
     arg0 = os.path.basename(argv[0]).lower()
     # Python interpreters: python, python3, python3.12, pythonw, etc.
     if arg0.startswith("python"):
-        return True
-    # Installed console script — pip places a shim at `<venv>/bin/spirit`
-    # whose argv[0] is the script path, not python. The shim itself
-    # imports spirit.main:main and calls it.
+        # Must actually be invoking spirit. Patterns:
+        #   python -m spirit.main                  → 'spirit.main' in argv
+        #   python /path/to/spirit/main.py         → arg endswith spirit/main.py
+        #   python /venv/bin/spirit                → arg looks like a path
+        #                                            AND basename == 'spirit'
+        #
+        # The `/ in a` guard avoids the false positive where a random
+        # python process passes the bare word `spirit` as a positional
+        # arg (e.g. `python /some/script.py --name spirit`).
+        for a in argv[1:]:
+            if "spirit.main" in a:
+                return True
+            if a.endswith("spirit/main.py") or a.endswith("/spirit/main.py"):
+                return True
+            if "/" in a and os.path.basename(a) == "spirit":
+                return True
+        return False
+    # Installed console script — pip/pipx places a shim at
+    # `<venv>/bin/spirit` whose argv[0] is the script path, not python.
+    # The shim itself imports spirit.main:main and calls it.
     if arg0 == "spirit":
         return True
     return False
 
 
 def detect_other_spirit_processes() -> list[int]:
-    """Return PIDs of OTHER python processes running `spirit.main`.
+    """Return PIDs of OTHER processes running Spirit.
 
     Two-stage detection:
-      1. `pgrep -f` matches any process with `spirit.main` in its argv.
-      2. Each match is verified by reading `/proc/<pid>/cmdline` and
-         checking argv[0] is a real Python interpreter (or the
-         installed `spirit` entrypoint) — NOT a shell/tmux wrapper
-         that just happens to mention `spirit.main` in its argv.
+      1. `pgrep -f` matches any process whose argv mentions either
+         `spirit.main` (dev launch) or contains `spirit` as a word
+         boundary (installed console script, pipx shim, etc.).
+      2. Each match is verified by reading `/proc/<pid>/cmdline` via
+         `_argv_looks_like_spirit()`, which separates a real Spirit
+         Python process from shell wrappers (bash/tmux) and from
+         sibling tools (`spirit-health`, `spirit-preflight`) that
+         share the package's CLI namespace but are NOT the trading
+         daemon.
 
-    Stage 2 fixes the false-positive that fires whenever Spirit is
-    launched via `bash -c "... spirit.main ..."` or
-    `tmux new-session "... spirit.main ..."` — i.e. the documented
-    runbook pattern for systemd-less deployments.
+    Stage 1 was widened in #760 — the previous regex
+    ``\\bspirit\\.main\\b`` only caught the dev `python -m spirit.main`
+    pattern. Every
+    pipx-installed customer process (`/.local/bin/spirit ...`)
+    contains the word "spirit" but never the literal "spirit.main",
+    so the guard fired for nobody. Real-money risk in live mode.
 
     Excludes the current PID. Returns [] if `pgrep` is unavailable
     or finds nothing.
@@ -104,11 +138,17 @@ def detect_other_spirit_processes() -> list[int]:
         return []
     my_pid = os.getpid()
     try:
-        # Cast the net wide on pgrep — any process whose argv mentions
-        # spirit.main is a candidate. Stage 2 below filters out the
-        # shell wrappers that this matches incidentally.
+        # Match either:
+        #   spirit.main  — the dev / `python -m` invocation pattern
+        #   \bspirit\b   — the installed entrypoint pattern (catches
+        #                  /venv/bin/spirit, /usr/local/bin/spirit,
+        #                  and pipx-shim argv that includes the path
+        #                  to the spirit script as a separate arg).
+        # Stage 2 (_argv_looks_like_spirit) rejects the inevitable
+        # false positives: spirit-health, spirit-preflight, shell
+        # wrappers that just mention the word in a -c quoted string.
         result = subprocess.run(
-            ["pgrep", "-f", r"\bspirit\.main\b"],
+            ["pgrep", "-f", r"spirit\.main|\bspirit\b"],
             capture_output=True, text=True, timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
