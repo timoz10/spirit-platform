@@ -114,11 +114,15 @@ jobs:
       - name: Install OS prerequisites (Debian-bookworm container)
         if: matrix.container == 'python:3.12-slim-bookworm'
         run: |
-          # python:3.12-slim ships python+pip but not pipx. Also pull
-          # curl + ca-certificates for the TestPyPI / verify steps.
+          # python:3.12-slim ships python+pip but not pipx. We pull pipx via
+          # pip (NOT apt) so it binds to the container's Python 3.12 — apt's
+          # Bookworm pipx uses system Python 3.11, which can't install Spirit
+          # (Requires-Python >=3.12). curl + ca-certificates come from apt
+          # since they're not Python packages.
           apt-get update
-          apt-get install -y curl ca-certificates pipx
-          pipx ensurepath
+          apt-get install -y curl ca-certificates
+          python3 -m pip install --break-system-packages --no-cache-dir pipx
+          python3 -m pipx ensurepath
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Pin Python 3.12 (Ubuntu hosted runner)
@@ -339,8 +343,11 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           VERSION="${{ needs.wait-for-testpypi.outputs.version }}"
+          # --pre is required so TestPyPI's rc-suffixed versions satisfy the
+          # version pin. Without it, pip's "no matching distribution" error
+          # ignores every 2.2.3rcN candidate.
           pipx install --force \
-            --pip-args="--no-cache-dir --extra-index-url https://pypi.org/simple/" \
+            --pip-args="--no-cache-dir --pre --extra-index-url https://pypi.org/simple/" \
             --index-url "https://test.pypi.org/simple/" \
             "spirit-platform==${VERSION}"
           # Confirm pipx now reports the new version.
@@ -399,7 +406,17 @@ jobs:
           # lib tree so we can diff after spirit-setup runs. If setup writes
           # ANYTHING new under the venv (the pre-#733 bug), this set will
           # be non-empty.
-          VENV_LIB=$(pipx list --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['venvs']['spirit-platform']['metadata']['main_package']['app_paths'][0].rsplit('/bin/', 1)[0] + '/lib')")
+          #
+          # Use `pipx environment` to discover the venv root rather than
+          # parsing `pipx list --json` — newer pipx versions changed the
+          # JSON shape of app_paths from list-of-strings to list-of-dicts,
+          # which broke the prior .rsplit('/bin/', 1) extraction.
+          VENV_LIB="$(pipx environment --value PIPX_LOCAL_VENVS)/spirit-platform/lib"
+          if [ ! -d "$VENV_LIB" ]; then
+            echo "::error::Expected pipx venv lib dir not found: $VENV_LIB"
+            pipx environment
+            exit 1
+          fi
           echo "Pipx venv lib tree: ${VENV_LIB}"
           find "$VENV_LIB" -name "spirit.yaml" 2>/dev/null > /tmp/before-setup-yamls.txt || true
           echo "Pre-setup spirit.yaml files inside venv:"
