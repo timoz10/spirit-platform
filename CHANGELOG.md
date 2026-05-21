@@ -17,8 +17,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-_No unreleased changes yet._
+_v2.2.4 work in progress — see the section below._
 
+
+## 2.2.4 — TBD
+
+### Added
+
+- **Free-tier BYOD OHLC store.** Free instances can now upload OHLC data via `python3 -m spirit.backfill <kraken-csv>` and query it back through the standard DataProvider Protocol. The backfill CLI is tier-agnostic — same command, same flags on Free and Paid. New SQLite tables `user_ohlc` + `user_ohlc_batches` ship in the v2.2.4 schema; idempotent dedupe via composite PK + `ON CONFLICT DO NOTHING`. CSV re-imports of overlapping windows are silent dedupes; the count surfaces in the per-chunk log line.
+- **Boot-time OHLC catch-up.** When Spirit starts after downtime, it now fills the gap between "the last candle in my local store" and "now" before the strategy loop's first tick. Bounded by Kraken's 720-row per-call cap; if the gap is larger, the runner fills the most-recent 720 and logs a WARN advising a CSV-upload top-up. Empty local stores skip with INFO (no auto-seed). New env var `SPIRIT_OHLC_CATCHUP_INTERVALS` (default `60`) controls which intervals are caught up — comma-separated minutes. Adds ~15–20s to boot for 5 pairs × 3 intervals; single `[CATCHUP] complete in Xs (...)` summary log at the end.
+- **`/v1/runs` gateway routes.** New `GET /v1/runs` (list runs, RLS-scoped, derived from `strategy_performance` GROUP BY `run_id`) and `DELETE /v1/runs/{run_id}` (cascade-delete across the three RLS-scoped result tables, refuses `'live'`). Real Paid customer installs can finally use `spirit --list-runs` / `spirit --delete-run` — the pre-v2.2.4 paid path used direct PG which crashes on customer machines (no DB creds). Capabilities `read:runs` + `delete:runs` granted to Plus, Pro, internal_canary, internal_test_plus, internal_test_pro (migration 040).
+
+### Changed
+
+- **`spirit --list-runs` / `spirit --delete-run` now go through the DataProvider Protocol** on both tiers. `run_manager` is 45% smaller (363 → 198 LOC) — six private branches/helpers deleted. Same UX surface; cleaner internals. (#779)
+- **`spirit.backfill` CLI no longer accepts `--api-url` / `--api-key`.** Both are env-driven via `SPIRIT_API_URL` / `SPIRIT_API_KEY` through the tier factory. Free tier doesn't need an API key at all — the backfill goes to local SQLite. Scripts that passed the old flags will exit 2 with an argparse-rejected-flag message; switch to env vars.
+- **`delete_run()` returns a uniform 4-key dict across tiers.** Pre-v2.2.4 Free returned `{strategy_performance: N}` (1-key). Now both tiers return `{strategy_performance, scorer_outcomes, risk_gate_decisions, replay_runs}` — Free reports zero for the three paid-only tables. Callers that were `assert counts == {"strategy_performance": N}` need updating.
+
+### Fixed
+
+- **`spirit --list-runs` on Free returned `[]` even when runs existed.** v2.2.3's `_resolve_sqlite_provider` read `dp.writes` but `CompositeDataProvider` stores it as `_writes`. The v2.2.4 architecture removes the helper entirely — `list_runs` now delegates through the Protocol. (#779)
+- **Heartbeat log line showed `last_candle=unknown` despite candles flowing.** Read site asked for `last_candle_dt`; writers populate `last_candle_time`. Two-character source change + 3 regression tests. (#780)
+- **`pip install spirit-platform` carried `sha=unknown` in every log line.** `git rev-parse` via subprocess fails on pipx installs (no `.git` in site-packages). Now `__git_sha__` is baked into the wheel at `publish.yml` build time; main.py prefers it, falls back to subprocess for source-tree installs. CI gates the injection on every PR + every published wheel. (#781)
+
+### Architecture
+
+- **`FrameworkDataProvider` Protocol is now the only tier switch in the codebase** — no `if tier == "free":` branches outside `get_data_provider()`. Documented in the new `docs/adr/0001-data-provider-is-the-tier-switch.md`. All five new BYOD/runs methods (`upload_user_ohlc`, `append_user_ohlc`, `get_user_ohlc`, `list_runs`, `delete_run`) preserve this invariant. Per-tier behaviour is owned by the concrete `SqliteDataProvider` / `ApiDataProvider` implementations, not by consumer code.
+- **Module Contract Discipline (Rule 12) extended to v2.2.4 surface.** Contracts for the 5 new Protocol methods + `OhlcCatchupRunner` + `wire_boot_catchup` added to `docs/reference/MODULE_CONTRACTS.md`. Pinned by tests in `tests/test_sqlite_data_provider_*`, `tests/test_runs_routes.py`, `tests/test_ohlc_catchup_runner.py`.
+
+### CI / release engineering
+
+- **Three new install-smoke gates on every PR** (`tests.yml`):
+  - SHA injection regex matches `__init__.py` shape (catches a v2.2.5+ format-drift regression early)
+  - Installed wheel reports a non-`unknown` `__git_sha__` (the #781 contract end-to-end)
+  - `[CATCHUP] complete in` log line appears during `spirit --mode test` (proves `wire_boot_catchup` wires up correctly)
+- **Pytest allowlist now includes 6 new v2.2.4 test files** — total 113 new tests across BYOD, runs, catchup, and the three regression bug fixes.
+
+---
 
 ## 2.2.3 — 2026-05-20
 

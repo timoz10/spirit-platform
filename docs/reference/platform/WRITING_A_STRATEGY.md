@@ -151,6 +151,27 @@ On Free, `get_data_provider()` returns a `CompositeDataProvider`:
 
 A working starting point: `src/spirit/strategies/examples/sma_crossover.py` (~120 lines, Framework-only).
 
+### BYOD OHLC and boot-time catch-up (v2.2.4+)
+
+Your local OHLC store is yours. Spirit writes candles there through the standard `DataProvider` methods:
+
+```python
+# Upload a Kraken CSV export — idempotent (re-uploading the same range is silent dedupe)
+dp.upload_user_ohlc(pair="XBTUSD", interval=60, candles=[...])
+
+# Incremental forward-tick append (called by the live candle handler)
+dp.append_user_ohlc(pair="XBTUSD", interval=60, candles=[...])
+
+# Read back — same row shape as get_ohlc() so they're swappable
+rows = dp.get_user_ohlc(pair="XBTUSD", interval=60, start=t0, end=t1)
+```
+
+**What happens at boot.** After `get_data_provider()` resolves, Spirit runs `OhlcCatchupRunner` once. Per `(pair, interval)` it reads the most-recent local candle, computes the gap to now, and fills it from the exchange. Bounded by Kraken's 720-row per-call cap — bigger gaps fill the most-recent 720 and log a WARN advising a fresh CSV upload for the older portion. Empty local stores skip silently (CSV upload is the bulk-seed path).
+
+**Boot-time latency.** Multi-pair × multi-interval catch-up adds ~3–4 seconds per `(pair, interval)` tuple at Kraken's anonymous-tier rate limit. A 5-pair × 3-interval config typically lands in 15–20 seconds. Spirit logs a single `[CATCHUP] complete in Xs (...)` summary line at the end. Control which intervals are caught up via `SPIRIT_OHLC_CATCHUP_INTERVALS` (default `60`; comma-separated minutes).
+
+**Why you'd care.** If your strategy uses `dp.get_user_ohlc(...)` for indicator warm-up (rather than re-querying the exchange every boot), boot-time catch-up means your first tick sees the same candles a continuously-running Spirit would. The previous "Spirit was off for 4 hours, now my MACD is broken until enough candles flow" trap is gone.
+
 ### Reading from event payloads (no fetch race)
 
 When a D-Limit row finishes computing, the gateway pushes a WS event with the canonical row attached. Read `event.row` directly in `on_pipeline_event` — don't issue a fresh fetch, you'll race against commit visibility.

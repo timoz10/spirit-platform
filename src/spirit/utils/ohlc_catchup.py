@@ -294,9 +294,9 @@ def wire_boot_catchup(dp: Any, *, instance: str) -> dict | None:
             getattr(dp, "_reads", None) or getattr(dp, "_ohlc_source", None)
         )
         if ohlc_source is None:
-            logger.debug(
-                "[CATCHUP] DataProvider %s has no exchange-backed read side; "
-                "skipping (centralised OHLC store covers this tier)",
+            logger.info(
+                "[CATCHUP] skipped: DataProvider %s has no exchange-backed "
+                "read side (centralised OHLC store covers this tier)",
                 type(dp).__name__,
             )
             return None
@@ -304,14 +304,14 @@ def wire_boot_catchup(dp: Any, *, instance: str) -> dict | None:
         try:
             pair_rows = dp.get_pairs(instance=instance) or []
         except Exception as e:
-            logger.warning(f"[CATCHUP] get_pairs failed: {e}")
+            logger.warning(f"[CATCHUP] skipped: get_pairs failed: {e}")
             return None
         pairs = [
             r["pair"] for r in pair_rows
             if isinstance(r, dict) and r.get("pair")
         ]
         if not pairs:
-            logger.info("[CATCHUP] no pairs configured for instance — skipping")
+            logger.info("[CATCHUP] skipped: no pairs configured for instance")
             return None
 
         raw_intervals = get_config("SPIRIT_OHLC_CATCHUP_INTERVALS", "60") or "60"
@@ -327,7 +327,7 @@ def wire_boot_catchup(dp: Any, *, instance: str) -> dict | None:
                     f"[CATCHUP] skipping invalid interval token: {tok!r}"
                 )
         if not intervals:
-            logger.info("[CATCHUP] no valid intervals configured — skipping")
+            logger.info("[CATCHUP] skipped: no valid intervals configured")
             return None
 
         runner = OhlcCatchupRunner(
@@ -335,5 +335,5 @@ def wire_boot_catchup(dp: Any, *, instance: str) -> dict | None:
         )
         return runner.run()
     except Exception as e:
-        logger.warning(f"[CATCHUP] boot-time wiring failed: {e}")
+        logger.warning(f"[CATCHUP] skipped: boot-time wiring failed: {e}")
         return None
