@@ -231,7 +231,11 @@ class SpiritOrchestrator:
         self._last_alive_log_ts = now
 
         candles = ctx.health.get('candles_processed', 0) if hasattr(ctx, 'health') else 0
-        last_candle = ctx.health.get('last_candle_dt') if hasattr(ctx, 'health') else None
+        # #780: writers populate `last_candle_time`; this read site previously
+        # asked for `last_candle_dt` and always got None → "unknown" in every
+        # heartbeat. Aligned with the writer key (search shows it set in
+        # ctx.health by the candle handler).
+        last_candle = ctx.health.get('last_candle_time') if hasattr(ctx, 'health') else None
         last_candle_str = str(last_candle) if last_candle else 'unknown'
 
         self.logger.info(
@@ -1564,17 +1568,29 @@ def main():
         raise SystemExit(1)
     logger.info("Pre-flight checks passed.")
 
-    # Log version and active configuration for prod traceability (#25, #249)
-    from spirit import __version__
+    # Log version and active configuration for prod traceability (#25, #249).
+    # SHA resolution (#781): prefer the build-time `__git_sha__` stamped in
+    # by publish.yml so pipx installs (no .git in site-packages) carry a
+    # real value. Source-tree installs leave `__git_sha__ == 'unknown'`
+    # and fall through to the subprocess path which produces a fresh
+    # short SHA from the working tree.
+    from spirit import __git_sha__, __version__
     import subprocess
-    try:
-        git_hash = subprocess.check_output(
-            ['git', 'rev-parse', '--short', 'HEAD'],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            stderr=subprocess.DEVNULL
-        ).decode().strip()
-    except Exception:
-        git_hash = 'unknown'
+    git_hash = (__git_sha__ or 'unknown').strip()
+    if git_hash == 'unknown':
+        try:
+            git_hash = subprocess.check_output(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+        except Exception:
+            git_hash = 'unknown'
+    else:
+        # Truncate build-stamped full SHA to 7 chars to match the
+        # subprocess --short output (7 hex chars is the historical default
+        # in this codebase — keeps log lines uniform between dev + pipx).
+        git_hash = git_hash[:7]
     instance = get_config('SPIRIT_INSTANCE', 'prod')
     strategy_name = get_config('SPIRIT_STRATEGY', 'none')
     mode_label = 'replay' if '--replay' in sys.argv else get_config('SPIRIT_MODE', 'paper')
