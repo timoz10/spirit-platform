@@ -29,6 +29,8 @@ Run the wizard once (it asks your tier, instance name, and an optional Kraken AP
 
 To go live, swap `--mode paper` for `--mode live` once you've sanity-checked the paper P&L.
 
+> **OHLC data ownership (v2.2.4+).** Spirit's local OHLC store is yours — Free instances persist candles in `~/.spirit/<instance>/spirit.db`. When Spirit starts up after downtime, it fills the gap (up to 12 hours of 1-minute candles per boot) from the exchange automatically. For longer gaps, run `python3 -m spirit.backfill <kraken-csv>` once with a Kraken CSV export. The boot catch-up adds ~15–20 seconds for a typical multi-pair multi-interval config; configure with `SPIRIT_OHLC_CATCHUP_INTERVALS` (default `60`).
+
 ---
 
 ## Tiers and pricing
