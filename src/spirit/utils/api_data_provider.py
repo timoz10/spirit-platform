@@ -302,6 +302,17 @@ class ApiDataProvider:
         """
         return self._post_candles("/ohlc/append", pair, interval, candles)
 
+    def append_user_ohlc(self, pair: str, interval: int, candles) -> dict:
+        """Protocol-canonical alias for ``push_user_ohlc`` (v2.2.4).
+
+        The Protocol surface uses ``append_user_ohlc`` for symmetry
+        across tiers (SqliteDataProvider, ApiDataProvider). The legacy
+        ``push_user_ohlc`` name is retained for backward compatibility
+        with existing callers (``data_provider._push_to_cloud``,
+        BYOD tests). New code should prefer this name.
+        """
+        return self.push_user_ohlc(pair, interval, candles)
+
     def upload_user_ohlc(self, pair: str, interval: int, candles) -> dict:
         """Bulk-upload BYOD candles via POST /v1/ohlc/upload (≤50k per call).
 
@@ -313,6 +324,44 @@ class ApiDataProvider:
         Capability required: write:ohlc_user.
         """
         return self._post_candles("/ohlc/upload", pair, interval, candles)
+
+    # ------------------------------------------------------------------
+    # Runs — list + delete (v2.2.4)
+    # ------------------------------------------------------------------
+
+    def list_runs(self, *, limit: int = 30) -> list[dict]:
+        """List runs (excluding live) via GET /v1/runs.
+
+        Derived gateway-side from `strategy_performance` GROUP BY
+        run_id, RLS-scoped to the caller's instance. Same 14-field
+        shape main.py's --list-runs renderer expects; paid-only fields
+        legacy `replay_runs` tracked but `strategy_performance` doesn't
+        come back as ``None``.
+
+        Capability required: read:runs.
+        """
+        return self._get("/runs", {"limit": limit})
+
+    def delete_run(self, run_id: str) -> dict:
+        """Delete a run via DELETE /v1/runs/{run_id}.
+
+        Cascades across `strategy_performance` + `scorer_outcomes` +
+        `risk_gate_decisions` (all RLS-scoped). `replay_runs` is always
+        reported as 0 — the gateway never touches it (dev/CI-only,
+        not customer-scoped).
+
+        Refuses ``run_id='live'`` with HTTP 400. Nonexistent run_id
+        returns all-zeros without erroring.
+
+        Capability required: delete:runs.
+        """
+        resp = self._session.delete(
+            f"{self._url}/runs/{run_id}",
+            timeout=self._timeout,
+        )
+        _raise_for_capability_denial(resp)
+        resp.raise_for_status()
+        return resp.json()
 
     def _post_candles(self, path: str, pair: str, interval: int,
                       candles) -> dict:

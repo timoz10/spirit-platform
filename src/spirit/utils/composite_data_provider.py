@@ -126,6 +126,31 @@ class CompositeDataProvider:
         )
 
     # ==================================================================
+    # FrameworkDataProvider — BYOD OHLC + runs (v2.2.4)
+    # ==================================================================
+    # All five route to the writes delegate (SqliteDataProvider on Free).
+    # OHLC reads STILL go via `get_ohlc` on the reads delegate; these
+    # are user-owned OHLC writes/reads that live in local SQLite.
+
+    def upload_user_ohlc(self, pair, interval, candles):
+        return self._writes.upload_user_ohlc(pair, interval, candles)
+
+    def append_user_ohlc(self, pair, interval, candles):
+        return self._writes.append_user_ohlc(pair, interval, candles)
+
+    def get_user_ohlc(self, pair, interval, *, start=None, end=None,
+                      limit=5000, order="asc"):
+        return self._writes.get_user_ohlc(
+            pair, interval, start=start, end=end, limit=limit, order=order,
+        )
+
+    def list_runs(self, *, limit=30):
+        return self._writes.list_runs(limit=limit)
+
+    def delete_run(self, run_id):
+        return self._writes.delete_run(run_id)
+
+    # ==================================================================
     # IPDataProvider — every method raises with the upgrade message
     # ==================================================================
 
