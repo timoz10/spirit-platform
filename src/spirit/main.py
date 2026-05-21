@@ -1621,6 +1621,14 @@ def main():
         except Exception as e:
             logger.warning(f"[HEARTBEAT] Startup heartbeat failed: {e}")
 
+    # OHLC catchup — fill the user_ohlc gap from "Spirit was off" to "now"
+    # (v2.2.4). Best-effort: wire_boot_catchup() never raises. Skipped in
+    # replay mode (replay uses simulated data) and on naked ApiDataProvider
+    # tiers (internal_canary) where OHLC comes from the centralised store.
+    if mode_label != 'replay':
+        from spirit.utils.ohlc_catchup import wire_boot_catchup
+        wire_boot_catchup(dp, instance=instance)
+
     # Start web dashboard if enabled
     if get_config('SPIRIT_WEB', '').lower() in ('1', 'true', 'yes'):
         from spirit.web import start_web_server, update_state
