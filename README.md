@@ -99,7 +99,7 @@ We'll be releasing more exchange adapters over time. If there's a specific excha
 
 ## Status
 
-- **v2.2.1** — first public release. Free + Plus tiers, single-machine deploy, paper or live mode.
+Current release: see the [latest tag on PyPI](https://pypi.org/project/spirit-platform/) or [GitHub Releases](https://github.com/timoz10/spirit-platform/releases) for the changelog. The Apache-2.0 framework is stable; Plus and Pro infrastructure is in active development.
 
 ---
 

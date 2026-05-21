@@ -15,12 +15,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased]
+## Unreleased
 
 _No unreleased changes yet._
 
 
-## [2.2.3] — 2026-05-20
+## 2.2.3 — 2026-05-20
 
 ### GA-blocker fixes (post-rc9, included in the published 2.2.3 wheel)
 
@@ -114,7 +114,7 @@ Pinned by `tests/test_spirit_health_contract.py` + `tests/test_spirit_preflight_
 This release also adds a 5-phase release engineering process (`docs/RELEASE_ENGINEERING_PROCESS.md`) and three independent CI gates that protect every PyPI publish. Internal/process changes; no behavioural impact for installed users beyond making future releases harder to ship broken.
 
 
-## [2.2.2] — 2026-05-17
+## 2.2.2 — 2026-05-17
 
 ### Fixed
 
@@ -134,7 +134,7 @@ This release also adds a 5-phase release engineering process (`docs/RELEASE_ENGI
 Initial publish of 2.2.2 (yanked) was missing several runtime-imported modules from the wheel; republished as 2.2.2.post1 the same day with the complete bundle and the new CI smoke gate. 2.2.2.post2 added the `spirit-setup` console script (was previously only invokable as `python -m spirit.setup`, which doesn't work on pipx installs because pipx isolates the package from the system Python). Anyone running `pip install spirit-platform` resolves to the latest 2.2.2.postN distribution.
 
 
-## [2.2.1] — 2026-05-14
+## 2.2.1 — 2026-05-14
 
 First public release. Spirit ships as `pip install spirit-platform` from PyPI. Free tier runs entirely on your machine against your own exchange keys; Plus and Pro extend with hosted D-Limit indicators, Bring-Your-Own-Data historical OHLC storage, and cloud-backed trade history with crash recovery.
 
@@ -249,7 +249,7 @@ First public release. Spirit ships as `pip install spirit-platform` from PyPI. F
 | #700 | Setup: wizard re-run should detect existing instance dirs + offer data migration |
 
 
-## [2.2.0] — 2026-05-05
+## 2.2.0 — 2026-05-05
 
 First "stable platform" tag. Phase A capability-based tier enforcement on data routes + Phase B per-key daily quotas + Hetzner egress accounting + Kraken data licence request committed. Internal tag — public release was originally targeted here but slipped to 2.2.1 to incorporate the Free tier.
 
@@ -267,6 +267,4 @@ For pre-2.2.0 changes (versions 2.0 through 2.10.x — internal counter scheme, 
 
 ---
 
-[Unreleased]: https://github.com/timoz10/spirit-platform/compare/v2.2.1...HEAD
-[2.2.1]: https://github.com/timoz10/spirit-platform/releases/tag/v2.2.1
-[2.2.0]: https://github.com/timoz10/spirit-platform/releases/tag/v2.2.0
+Release tags: https://github.com/timoz10/spirit-platform/releases
