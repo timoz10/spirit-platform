@@ -65,6 +65,63 @@ class FrameworkDataProvider(Protocol):
         ...
 
     # -----------------------------------------------------------------
+    # BYOD OHLC — customer-owned OHLC store (v2.2.4)
+    # -----------------------------------------------------------------
+    # On Free tier these route to local SQLite. On Paid tier they route
+    # through the gateway to per-instance cloud storage. Callers stay
+    # tier-agnostic — same Protocol surface either way. Contracts pinned
+    # in docs/reference/MODULE_CONTRACTS.md.
+
+    def upload_user_ohlc(
+        self,
+        pair: str,
+        interval: int,
+        candles: list[dict],
+    ) -> dict:
+        """Bulk-seed user-owned OHLC (CSV import path).
+
+        Idempotent: re-uploading the same (pair, interval, timestamp)
+        rows is silently deduped. Returns
+        ``{"batch_id": str, "rows_inserted": int, "rows_skipped": int}``.
+
+        Raises ValueError on malformed candle dicts (missing OHLC keys).
+        Never raises on dedupe.
+        """
+        ...
+
+    def get_user_ohlc(
+        self,
+        pair: str,
+        interval: int,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 5000,
+        order: str = "asc",
+    ) -> list[dict]:
+        """Read back user-owned OHLC. Same row shape as ``get_ohlc``.
+
+        Half-open window: ``[start, end)``. ``order='desc'`` with
+        ``limit=1`` returns the most recent local candle (used by the
+        boot-time catch-up runner).
+        """
+        ...
+
+    def append_user_ohlc(
+        self,
+        pair: str,
+        interval: int,
+        candles: list[dict],
+    ) -> dict:
+        """Incremental forward-tick append of user-owned OHLC.
+
+        Same row shape and dedupe semantics as ``upload_user_ohlc``.
+        Distinct call site so observability can tell bulk-seed (CSV)
+        apart from incremental (live + catch-up) writes.
+        """
+        ...
+
+    # -----------------------------------------------------------------
     # State (spirit_state key-value store) — crash recovery
     # -----------------------------------------------------------------
 
@@ -124,6 +181,38 @@ class FrameworkDataProvider(Protocol):
         Pure trade-outcome aggregation — framework data (users own their
         trades). Consumed by IP regime engine but the aggregation itself
         is not IP-derived.
+        """
+        ...
+
+    # -----------------------------------------------------------------
+    # Run management — list and delete replay/live runs (v2.2.4)
+    # -----------------------------------------------------------------
+    # Lifted from run_manager._is_free_tier() branches per the
+    # load-bearing principle that DataProvider is the only tier switch.
+    # Closes #779 properly (uniform call site, no attribute-name fragility).
+
+    def list_runs(self, *, limit: int = 30) -> list[dict]:
+        """List replay runs (excludes ``run_id='live'``). Most recent first.
+
+        Returns dicts with keys: ``id, tag, strategy_name, pairs,
+        start_date, end_date, git_hash, status, started_at,
+        completed_at, total_trades, win_rate, profit_factor,
+        net_pnl_pct``.
+
+        On Free, paid-only fields (``tag``, ``git_hash``,
+        ``profit_factor``) come back as ``None``. main.py renders
+        ``None`` as ``-`` so the display layer is unchanged.
+        """
+        ...
+
+    def delete_run(self, run_id: str) -> dict:
+        """Delete all rows for a given run_id across performance tables.
+
+        Refuses ``run_id='live'``. Returns per-table delete counts:
+        ``{"strategy_performance": int, "scorer_outcomes": int,
+        "risk_gate_decisions": int, "replay_runs": int}``. Free tier
+        returns zero for tables that don't exist locally. Nonexistent
+        run_id returns all zeros without erroring.
         """
         ...
 
