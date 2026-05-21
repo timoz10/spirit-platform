@@ -116,6 +116,24 @@ jobs:
           sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/spirit/__init__.py
           grep '^__version__' src/spirit/__init__.py
 
+      - name: Inject git SHA into __init__.py (#781)
+        run: |
+          # Bake the GitHub Actions SHA into the wheel so pipx installs
+          # report a real value instead of "unknown" (no .git in
+          # site-packages). main.py prefers this over its subprocess
+          # fallback. The default-on-disk value is "unknown" so the
+          # source tree is unchanged when this workflow doesn't run.
+          SHA="${GITHUB_SHA:-unknown}"
+          echo "Stamping __git_sha__ = ${SHA}"
+          sed -i "s/^__git_sha__ = .*/__git_sha__ = \"${SHA}\"/" src/spirit/__init__.py
+          grep '^__git_sha__' src/spirit/__init__.py
+          # Sanity: if the regex didn't match, the line is unchanged and
+          # we'd ship 'unknown' silently. Fail loudly here instead.
+          if grep -q '^__git_sha__ = "unknown"$' src/spirit/__init__.py; then
+              echo "::error::failed to inject __git_sha__ — value still 'unknown'"
+              exit 1
+          fi
+
       - name: Build distributions
         run: python -m build
 
