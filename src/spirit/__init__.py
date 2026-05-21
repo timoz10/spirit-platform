@@ -4,7 +4,7 @@ Spirit Trading Platform
 Automated cryptocurrency trading system with modular strategy architecture.
 """
 
-__version__ = "2.2.3"
+__version__ = "2.2.4"
 __package_name__ = "spirit-platform"
 
 # Git SHA at build time. Default is "unknown" so a source-tree install
