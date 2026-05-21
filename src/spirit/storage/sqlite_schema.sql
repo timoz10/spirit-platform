@@ -108,3 +108,51 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_sp_no_dupes
 
 CREATE INDEX IF NOT EXISTS idx_sp_run_id
     ON strategy_performance(run_id);
+
+-- ---------------------------------------------------------------------
+-- user_ohlc + user_ohlc_batches — BYOD OHLC store (v2.2.4)
+--
+-- Mirror of cloud `public.user_ohlc_uploads` + `user_ohlc_upload_batches`
+-- (#666) minus the `instance` column — Free tier uses file-level
+-- isolation instead of PG RLS row-scoping.
+--
+-- Composite PK on (pair, interval, timestamp) gives idempotent
+-- ON CONFLICT DO NOTHING upsert semantics (re-uploads silently
+-- dedupe). Batch row anchors the audit trail with source tag
+-- ('csv_upload' for bulk seed, 'live' for incremental forward-tick)
+-- so `list_runs`-style introspection can tell the two paths apart.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_ohlc_batches (
+    batch_id       TEXT PRIMARY KEY,                -- uuid4().hex on insert
+    source         TEXT NOT NULL                    -- 'csv_upload' | 'live'
+                   CHECK (source IN ('csv_upload', 'live')),
+    pair           TEXT NOT NULL,
+    interval       INTEGER NOT NULL,
+    min_timestamp  TEXT NOT NULL,                   -- ISO-8601 UTC
+    max_timestamp  TEXT NOT NULL,                   -- ISO-8601 UTC
+    row_count      INTEGER NOT NULL DEFAULT 0,      -- updated after dedupe
+    created_by     TEXT,                            -- nullable for Free
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS user_ohlc (
+    pair       TEXT    NOT NULL,
+    interval   INTEGER NOT NULL,
+    timestamp  TEXT    NOT NULL,                    -- ISO-8601 UTC
+    open       REAL    NOT NULL,
+    high       REAL    NOT NULL,
+    low        REAL    NOT NULL,
+    close      REAL    NOT NULL,
+    vwap       REAL,
+    volume     REAL,
+    count      INTEGER,
+    batch_id   TEXT    NOT NULL
+               REFERENCES user_ohlc_batches(batch_id) ON DELETE CASCADE,
+    PRIMARY KEY (pair, interval, timestamp)
+);
+
+-- Window queries (catch-up runner reads order=desc limit=1; replay reads
+-- a [start, end) range). The PK already covers (pair, interval, ts) so
+-- this index is mostly belt-and-braces for the DESC order path.
+CREATE INDEX IF NOT EXISTS idx_user_ohlc_pair_interval_ts
+    ON user_ohlc(pair, interval, timestamp DESC);

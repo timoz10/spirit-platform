@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -445,3 +446,289 @@ class SqliteDataProvider:
                 (run_id,),
             )
             return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # BYOD OHLC — customer-owned store (v2.2.4)
+    # ------------------------------------------------------------------
+
+    # 'live' sentinel mirrored from run_manager.LIVE_RUN_ID. Hard-coded
+    # here to dodge a circular import (run_manager imports the
+    # DataProvider via spirit.utils.data_provider, which imports this
+    # file). If LIVE_RUN_ID ever changes, update both sites.
+    _LIVE_RUN_ID = "live"
+
+    _REQUIRED_CANDLE_KEYS = frozenset({"timestamp", "open", "high", "low", "close"})
+
+    def _validate_candles(self, candles: list[dict]) -> None:
+        """Raise ValueError on malformed candle dicts (Protocol contract)."""
+        for i, c in enumerate(candles):
+            if not isinstance(c, dict):
+                raise ValueError(
+                    f"candles[{i}] must be a dict; got {type(c).__name__}"
+                )
+            missing = self._REQUIRED_CANDLE_KEYS - set(c.keys())
+            if missing:
+                raise ValueError(
+                    f"candles[{i}] missing required keys: {sorted(missing)}"
+                )
+
+    @staticmethod
+    def _candle_ts_iso(c: dict) -> str:
+        """Normalise a candle's timestamp to ISO-8601 UTC text.
+
+        Accepts either a datetime or an already-ISO string. Naive
+        datetimes are interpreted as UTC (Rule 11).
+        """
+        ts = c["timestamp"]
+        if isinstance(ts, datetime):
+            return _to_iso(ts)
+        # Assume ISO-shaped string. Don't reparse — the dedupe relies on
+        # byte-equal PK values, so callers feeding mixed formats here
+        # would dedupe incorrectly. If misformatted, the INSERT will
+        # surface the violation at write time, not silently.
+        return str(ts)
+
+    def _persist_user_candles(
+        self,
+        *,
+        source: str,
+        pair: str,
+        interval: int,
+        candles: list[dict],
+    ) -> dict:
+        """Shared transactional batch insert + audit row for upload + append.
+
+        Returns ``{"batch_id", "rows_inserted", "rows_skipped",
+        "min_timestamp", "max_timestamp"}``. min/max are extra keys
+        beyond the strict Protocol contract — parity with the cloud
+        gateway response shape, harmless for callers that ignore them.
+        """
+        if not candles:
+            return {
+                "batch_id": "",
+                "rows_inserted": 0,
+                "rows_skipped": 0,
+                "min_timestamp": None,
+                "max_timestamp": None,
+            }
+        self._validate_candles(candles)
+        batch_id = uuid.uuid4().hex
+        ts_iso = [self._candle_ts_iso(c) for c in candles]
+        min_ts = min(ts_iso)
+        max_ts = max(ts_iso)
+
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_ohlc_batches
+                    (batch_id, source, pair, interval,
+                     min_timestamp, max_timestamp, row_count, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, 0, NULL)
+                """,
+                (batch_id, source, pair, interval, min_ts, max_ts),
+            )
+
+            # ON CONFLICT DO NOTHING idempotent insert. cursor.rowcount
+            # after executemany on ON CONFLICT is not reliable across
+            # SQLite versions, so count via COUNT(*) deltas — same
+            # pattern strategy_performance uses.
+            cur.execute(
+                "SELECT COUNT(*) FROM user_ohlc WHERE pair = ? AND interval = ?",
+                (pair, interval),
+            )
+            before = cur.fetchone()[0]
+            cur.executemany(
+                """
+                INSERT INTO user_ohlc
+                    (pair, interval, timestamp,
+                     open, high, low, close,
+                     vwap, volume, count, batch_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(pair, interval, timestamp) DO NOTHING
+                """,
+                [
+                    (pair, interval, ts,
+                     c["open"], c["high"], c["low"], c["close"],
+                     c.get("vwap"), c.get("volume"), c.get("count"),
+                     batch_id)
+                    for c, ts in zip(candles, ts_iso)
+                ],
+            )
+            cur.execute(
+                "SELECT COUNT(*) FROM user_ohlc WHERE pair = ? AND interval = ?",
+                (pair, interval),
+            )
+            after = cur.fetchone()[0]
+            rows_inserted = after - before
+            rows_skipped = len(candles) - rows_inserted
+
+            cur.execute(
+                "UPDATE user_ohlc_batches SET row_count = ? WHERE batch_id = ?",
+                (rows_inserted, batch_id),
+            )
+
+        if rows_skipped > 0:
+            logger.info(
+                "[BYOD] %s %s/%dm batch=%s: inserted=%d skipped=%d (dedupe)",
+                source, pair, interval, batch_id[:8], rows_inserted, rows_skipped,
+            )
+        else:
+            logger.info(
+                "[BYOD] %s %s/%dm batch=%s: inserted=%d",
+                source, pair, interval, batch_id[:8], rows_inserted,
+            )
+
+        return {
+            "batch_id": batch_id,
+            "rows_inserted": rows_inserted,
+            "rows_skipped": rows_skipped,
+            "min_timestamp": min_ts,
+            "max_timestamp": max_ts,
+        }
+
+    def upload_user_ohlc(
+        self,
+        pair: str,
+        interval: int,
+        candles: list[dict],
+    ) -> dict:
+        """Bulk-seed user-owned OHLC. Source tagged ``'csv_upload'``."""
+        return self._persist_user_candles(
+            source="csv_upload", pair=pair, interval=interval, candles=candles,
+        )
+
+    def append_user_ohlc(
+        self,
+        pair: str,
+        interval: int,
+        candles: list[dict],
+    ) -> dict:
+        """Incremental forward-tick append. Source tagged ``'live'``."""
+        return self._persist_user_candles(
+            source="live", pair=pair, interval=interval, candles=candles,
+        )
+
+    def get_user_ohlc(
+        self,
+        pair: str,
+        interval: int,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 5000,
+        order: str = "asc",
+    ) -> list[dict]:
+        """Read back user-owned OHLC. Same row shape as ``get_ohlc``.
+
+        Half-open window: ``[start, end)``. ``order='desc' limit=1``
+        returns the most recent local candle — the path used by the
+        boot-time catch-up runner to find its resume point.
+        """
+        clauses = ["pair = ?", "interval = ?"]
+        params: list[Any] = [pair, interval]
+        if start is not None:
+            clauses.append("timestamp >= ?")
+            params.append(_to_iso(start))
+        if end is not None:
+            clauses.append("timestamp < ?")
+            params.append(_to_iso(end))
+        direction = "ASC" if order.lower() == "asc" else "DESC"
+        sql = (
+            "SELECT pair, interval, timestamp, "
+            "open, high, low, close, vwap, volume, count "
+            "FROM user_ohlc WHERE " + " AND ".join(clauses) +
+            f" ORDER BY timestamp {direction} LIMIT ?"
+        )
+        params.append(int(limit))
+        with self._cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        out: list[dict] = []
+        for row in rows:
+            d = _row_to_dict(row) or {}
+            # Match the `get_ohlc` row shape: rename timestamp → datetime
+            # so callers can drop one source for the other without churn.
+            if "timestamp" in d:
+                d["datetime"] = d.pop("timestamp")
+            out.append(d)
+        return out
+
+    # ------------------------------------------------------------------
+    # Run management — derive list and delete from strategy_performance
+    # ------------------------------------------------------------------
+
+    def list_runs(self, *, limit: int = 30) -> list[dict]:
+        """Derive a run list from ``strategy_performance`` via GROUP BY.
+
+        Free tier has no separate ``replay_runs`` registry, so we
+        synthesise one-row-per-run from the trade-outcome table.
+        Returns the 14-field shape main.py expects, with paid-only
+        fields (tag, git_hash, profit_factor) as ``None``.
+        """
+        sql = """
+            SELECT
+                run_id,
+                strategy_name,
+                COUNT(*)                                              AS total_trades,
+                AVG(CASE WHEN is_win = 1 THEN 1.0 ELSE 0.0 END)       AS win_rate,
+                SUM(pnl_pct)                                          AS net_pnl_pct,
+                MIN(entry_timestamp)                                  AS started_at,
+                MAX(timestamp)                                        AS completed_at,
+                GROUP_CONCAT(DISTINCT pair)                           AS pairs
+            FROM strategy_performance
+            WHERE run_id != ?
+            GROUP BY run_id, strategy_name
+            ORDER BY MIN(entry_timestamp) DESC
+            LIMIT ?
+        """
+        with self._cursor() as cur:
+            cur.execute(sql, (self._LIVE_RUN_ID, int(limit)))
+            rows = cur.fetchall()
+
+        out: list[dict] = []
+        for row in rows:
+            started_at = row["started_at"]
+            completed_at = row["completed_at"]
+            out.append({
+                "id": row["run_id"],
+                "tag": None,                  # not tracked on Free
+                "strategy_name": row["strategy_name"],
+                "pairs": row["pairs"],
+                "start_date": (started_at or "")[:10] or None,
+                "end_date": (completed_at or "")[:10] or None,
+                "git_hash": None,             # not tracked on Free
+                "status": "completed",        # derived rows are always done
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "total_trades": row["total_trades"],
+                "win_rate": row["win_rate"],
+                "profit_factor": None,        # needs separate wins/losses sums
+                "net_pnl_pct": row["net_pnl_pct"],
+            })
+        return out
+
+    def delete_run(self, run_id: str) -> dict:
+        """Delete a run's rows from ``strategy_performance``.
+
+        Free tier returns zero for the three paid-only tables
+        (scorer_outcomes, risk_gate_decisions, replay_runs) — they
+        don't exist locally. Refuses ``run_id='live'`` to protect the
+        live trade history. Nonexistent run_id returns all zeros
+        without erroring (DELETE rowcount is 0 naturally).
+        """
+        if run_id == self._LIVE_RUN_ID:
+            raise ValueError(
+                "delete_run refuses run_id='live' to protect live trade history."
+            )
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM strategy_performance WHERE run_id = ?",
+                (run_id,),
+            )
+            deleted = cur.rowcount
+        return {
+            "strategy_performance": deleted,
+            "scorer_outcomes": 0,
+            "risk_gate_decisions": 0,
+            "replay_runs": 0,
+        }
