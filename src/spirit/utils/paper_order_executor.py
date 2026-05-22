@@ -437,9 +437,16 @@ class PaperOrderExecutor(OrderExecutor):
         return {'txid': [order_id], 'descr': {'order': f'paper sell {volume} {pair} @ market'}}
 
     def _record_to_pg(self, open_trade, trade_record, pnl: float):
-        """Write completed paper trade to strategy_performance table."""
+        """Write completed paper trade to strategy_performance table.
+
+        Import is at function scope so a missing writer doesn't crash the
+        module load — but a missing writer IS a packaging bug (#803), so
+        in dev/CI modes we re-raise to make CI install-smoke catch it.
+        In customer-facing paper/live modes we log loudly and continue
+        rather than crash the trading loop.
+        """
         try:
-            from spirit.indicators.decision_engine.engine.strategy_performance_writer import record_trade
+            from spirit.utils.strategy_performance_writer import record_trade
             from datetime import datetime, timezone
 
             entry_price = getattr(open_trade, 'entry_price', None) or 0.0
@@ -497,5 +504,20 @@ class PaperOrderExecutor(OrderExecutor):
                 )
             else:
                 logger.info(f"[PAPER] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
+        except (ImportError, ModuleNotFoundError) as e:
+            # Packaging bug, NOT a runtime/data condition. The writer should
+            # always be importable on a correctly-built wheel — see #803.
+            # Hard-fail in test/CI so install-smoke catches the regression;
+            # loud-log in paper mode so a customer never gets stuck on a
+            # bug that's our fault to fix.
+            msg = (
+                f"[PAPER] strategy_performance writer not importable — "
+                f"this is a packaging bug, NOT a runtime issue (#803). "
+                f"Wheel allowlist or import path is broken: {e}"
+            )
+            if self.replay_mode:
+                logger.error(msg)
+                raise   # --mode test must fail loudly so CI catches it
+            logger.error(msg, exc_info=True)
         except Exception as e:
-            logger.error(f"[PAPER] Failed to write to strategy_performance: {e}")
+            logger.error(f"[PAPER] Failed to write to strategy_performance: {e}", exc_info=True)
