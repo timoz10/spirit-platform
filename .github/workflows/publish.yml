@@ -523,12 +523,41 @@ jobs:
 
       - name: Extract CHANGELOG section
         id: notes
+        # WHY env vars instead of `${{ steps.meta.outputs.* }}` directly:
+        #
+        # The GitHub Actions `${{ }}` expression is **textual template
+        # substitution into the bash command line BEFORE bash parses it**.
+        # That means if the value contains shell-special characters —
+        # backticks, $(...), `;`, etc. — bash will execute them.
+        #
+        # `install_hint` deliberately contains backticks (for Markdown
+        # code-span formatting around the `pip install ...` example).
+        # Pre-fix, those backticks were template-substituted into the
+        # bash command line of the `echo` step, and bash ran the
+        # interpolated command as a substitution. The Release body
+        # ended up showing the LITERAL pip stdout — "Collecting
+        # spirit-platform==2.2.4rc1\nDownloading ...". Confirmed bug,
+        # filed as #774 in v2.2.3 era, surfaced again on v2.2.4-rc1.
+        #
+        # Routing through env vars makes bash apply *parameter
+        # expansion* on the variable name — which does NOT recurse into
+        # command substitution on the variable's value. So a value
+        # containing literal backticks survives unchanged into the
+        # release body.
+        #
+        # Rule for future workflow edits: never pass GHA output values
+        # into bash via `${{ }}` if the value could contain shell-
+        # special characters. Use the `env:` block on the step.
+        env:
+          BARE_VERSION: ${{ steps.meta.outputs.bare_version }}
+          INSTALL_HINT: ${{ steps.meta.outputs.install_hint }}
+          PYPI_URL:     ${{ steps.meta.outputs.pypi_url }}
         run: |
           # Pull the [X.Y.Z] section out of CHANGELOG.md. Each RC of a
           # given version reuses the same section (e.g. v2.2.3 rc1-rc8
           # all see the [2.2.3] section). If no section exists, fall
           # back to a generic pointer.
-          VERSION="${{ steps.meta.outputs.bare_version }}"
+          VERSION="$BARE_VERSION"
           SECTION=$(awk -v v="$VERSION" '
             $0 ~ "^## \\["v"\\]" { p = 1; print; next }
             p && /^## \[/         { exit }
@@ -540,9 +569,9 @@ jobs:
           fi
 
           {
-            echo "**Install:** ${{ steps.meta.outputs.install_hint }}"
+            echo "**Install:** $INSTALL_HINT"
             echo
-            echo "**PyPI:** ${{ steps.meta.outputs.pypi_url }}"
+            echo "**PyPI:** $PYPI_URL"
             echo
             echo "---"
             echo
@@ -551,6 +580,16 @@ jobs:
 
           echo "Body preview:"
           cat /tmp/release_body.md
+
+          # Regression assertion: a clean release body never contains the
+          # tell-tale strings that pip emits when its stdout is captured
+          # by an accidental backtick substitution. If we ever see these
+          # in the body file, the env-var routing has regressed.
+          if grep -qE "Collecting spirit-platform|Downloading https://(test-)?files\.pythonhosted\.org|━━━" /tmp/release_body.md; then
+              echo "::error::Release body contains pip stdout — #774 regression."
+              echo "::error::Check that all install/url interpolations route through env: vars."
+              exit 1
+          fi
 
       - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
