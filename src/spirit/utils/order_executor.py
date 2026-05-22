@@ -192,9 +192,15 @@ class LiveOrderExecutor(OrderExecutor):
             logger.error(f"[LIVE] Failed to write to live_orders: {e}")
 
     def _record_to_strategy_performance(self, open_trade, trade_record, pnl: float):
-        """Write completed live trade to strategy_performance table."""
+        """Write completed live trade to strategy_performance table.
+
+        See sibling on PaperOrderExecutor._record_to_pg. Packaging-bug
+        ImportError is split out from runtime errors. Live NEVER hard-fails
+        on this path: a packaging bug must not crash a position-holding
+        live trader. We log loudly with traceback for ops triage.
+        """
         try:
-            from spirit.indicators.decision_engine.engine.strategy_performance_writer import record_trade
+            from spirit.utils.strategy_performance_writer import record_trade
 
             entry_price = getattr(open_trade, 'entry_price', None) or 0.0
             exit_price = getattr(trade_record, 'exit_price', None) or 0.0
@@ -242,8 +248,18 @@ class LiveOrderExecutor(OrderExecutor):
                 )
             else:
                 logger.info(f"[LIVE] Recorded to strategy_performance: pnl_pct={pnl_pct:.2f}%")
+        except (ImportError, ModuleNotFoundError) as e:
+            # Packaging bug — see PaperOrderExecutor sibling. Live never
+            # hard-fails; we don't crash a position-holding trader on a
+            # bug that's ours to fix. Loud-log with traceback for ops.
+            logger.error(
+                f"[LIVE] strategy_performance writer not importable — "
+                f"this is a packaging bug, NOT a runtime issue (#803). "
+                f"Wheel allowlist or import path is broken: {e}",
+                exc_info=True,
+            )
         except Exception as e:
-            logger.error(f"[LIVE] Failed to write to strategy_performance: {e}")
+            logger.error(f"[LIVE] Failed to write to strategy_performance: {e}", exc_info=True)
 
     def place_limit_order(self, trade_record, limit_price: float) -> dict:
         """
