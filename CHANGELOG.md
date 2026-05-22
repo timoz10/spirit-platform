@@ -39,6 +39,8 @@ _v2.2.4 work in progress — see the section below._
 - **`spirit --list-runs` on Free returned `[]` even when runs existed.** v2.2.3's `_resolve_sqlite_provider` read `dp.writes` but `CompositeDataProvider` stores it as `_writes`. The v2.2.4 architecture removes the helper entirely — `list_runs` now delegates through the Protocol. (#779)
 - **Heartbeat log line showed `last_candle=unknown` despite candles flowing.** Read site asked for `last_candle_dt`; writers populate `last_candle_time`. Two-character source change + 3 regression tests. (#780)
 - **`pip install spirit-platform` carried `sha=unknown` in every log line.** `git rev-parse` via subprocess fails on pipx installs (no `.git` in site-packages). Now `__git_sha__` is baked into the wheel at `publish.yml` build time; main.py prefers it, falls back to subprocess for source-tree installs. CI gates the injection on every PR + every published wheel. (#781)
+- **`pairs.json` missing from the installed wheel — boot catch-up silently disabled.** rc1 surfaced this: `pyproject.toml.public`'s package-data glob was `["*.sql"]` only, so the JSON pair registry was dropped from the wheel. v2.2.4's new `OhlcCatchupRunner` is the first runtime consumer of the file, so the latent gap finally showed up. Glob updated to `["*.sql", "*.json"]` in both pyproject files + an install-smoke regression gate now asserts the file is on disk after pipx install. Spirit continued to run fine on rc1 via env-override fallback, but the v2.2.4 catch-up happy path never executed. (#796)
+- **Log file landed inside the pipx venv — wiped on every upgrade.** Pre-rc2 `LOG_FILE` resolved as "three dirs up from `config.py`", which on a pipx install pointed at `~/.local/share/pipx/venvs/spirit-platform/.../logs/`. `pipx upgrade` wipes the venv and silently destroyed customer log history. `_resolve_log_file()` is now instance-aware: with `SPIRIT_INSTANCE` set and `~/.spirit/<instance>/` present, logs land at `~/.spirit/<instance>/logs/spirit_syslog.log` (matches the SqliteDataProvider layout — DB already lives there). `LOG_FILE` env override and the repo-dev fallback are preserved. Pinned by `tests/test_log_path_resolution.py` (5 branches) + an install-smoke gate that imports `LOG_FILE` from the pipx-installed wheel and asserts the resolved path. Pre-existing flaw — same code in v2.2.3; surfaced when rc1 customers actually upgraded. (#799)
 
 ### Architecture
 
@@ -47,11 +49,13 @@ _v2.2.4 work in progress — see the section below._
 
 ### CI / release engineering
 
-- **Three new install-smoke gates on every PR** (`tests.yml`):
+- **Five new install-smoke gates on every PR** (`tests.yml`):
   - SHA injection regex matches `__init__.py` shape (catches a v2.2.5+ format-drift regression early)
   - Installed wheel reports a non-`unknown` `__git_sha__` (the #781 contract end-to-end)
   - `[CATCHUP] complete in` log line appears during `spirit --mode test` (proves `wire_boot_catchup` wires up correctly)
-- **Pytest allowlist now includes 6 new v2.2.4 test files** — total 113 new tests across BYOD, runs, catchup, and the three regression bug fixes.
+  - `pairs.json` is on disk after pipx install + parses as JSON (#796 contract — rc2)
+  - `LOG_FILE` imported from the pipx-installed wheel resolves under `~/.spirit/<instance>/logs/`, not inside the venv (#799 contract — rc2)
+- **Pytest allowlist now includes 7 new v2.2.4 test files** — total 118 new tests across BYOD, runs, catchup, the three regression bug fixes, and log-path resolution.
 
 ---
 
