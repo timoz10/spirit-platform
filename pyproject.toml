@@ -68,7 +68,13 @@ where = ["src"]
 include = ["spirit*"]
 
 [tool.setuptools.package-data]
-# Non-Python files shipped inside the wheel. Spirit's runtime needs the
-# SQLite schema at first connect — without this glob it lands as orphan
-# source-only and `executescript()` fails with "No such file or directory".
-"spirit.storage" = ["*.sql"]
+# Non-Python files shipped inside the wheel.
+#
+# - *.sql: schema files. Spirit's runtime needs the SQLite schema at first
+#   connect; without this glob it lands as orphan source-only and
+#   `executescript()` fails with "No such file or directory".
+# - *.json: pairs registry. v2.2.4 added boot-time OHLC catchup
+#   (`OhlcCatchupRunner` → `dp.get_pairs()`) which reads `pairs.json` from
+#   the installed wheel; without the glob the file is dropped silently and
+#   catchup self-disables on every customer install. See #796.
+"spirit.storage" = ["*.sql", "*.json"]

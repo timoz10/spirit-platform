@@ -20,12 +20,39 @@ from spirit.utils.config_loader import get_config
 DEFAULT_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BASE_DIR = os.environ.get("KRAKEN_BOT_BASE_DIR", DEFAULT_BASE_DIR)
 
+
+def _resolve_log_file() -> str:
+    """Pick a log path that survives pipx upgrades.
+
+    Why: 'three dirs up from config.py' lands inside the pipx venv on
+    installed wheels (~/.local/share/pipx/venvs/spirit-platform/.../logs/),
+    and pipx wipes the venv on every upgrade — silently destroying customer
+    diagnostic history. See #799.
+
+    Resolution order:
+      1. LOG_FILE env var (explicit override; back-compat).
+      2. SPIRIT_INSTANCE set AND ~/.spirit/<instance>/ exists →
+         ~/.spirit/<instance>/logs/spirit_syslog.log (matches SqliteDataProvider
+         layout — DB already lives at ~/.spirit/<instance>/spirit.db).
+      3. Fall back to BASE_DIR/logs/spirit_syslog.log (repo dev layout).
+    """
+    override = os.environ.get("LOG_FILE")
+    if override:
+        return override
+    instance = os.environ.get("SPIRIT_INSTANCE", "").strip()
+    if instance:
+        instance_dir = os.path.join(os.path.expanduser("~"), ".spirit", instance)
+        if os.path.isdir(instance_dir):
+            return os.path.join(instance_dir, "logs", "spirit_syslog.log")
+    return os.path.join(BASE_DIR, "logs", "spirit_syslog.log")
+
+
 # --- Paths (overridable via env) ---
 # DEPRECATED: DB_PATH is only kept for backward compatibility with strategies
 # that still import it. Spirit V2 uses SpiritContext (in-memory + PG) and
 # does not use SQLite. Will be removed once all strategies are migrated.
 DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "kraken_ohlc.db"))
-LOG_FILE = os.environ.get("LOG_FILE", os.path.join(BASE_DIR, "logs", "spirit_syslog.log"))
+LOG_FILE = _resolve_log_file()
 
 # --- Logging ---
 # Logging level: 'INFO', 'DEBUG', 'WARNING', 'ERROR', 'CRITICAL'
