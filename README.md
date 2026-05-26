@@ -1,6 +1,11 @@
 # Spirit
 
-Spirit is a programmable cryptocurrency trading platform — a playground for building and testing your own trading strategies in Python. It runs on your own hardware, talks to exchanges directly, and you own the strategy logic end-to-end.
+[![PyPI](https://img.shields.io/pypi/v/spirit-platform.svg)](https://pypi.org/project/spirit-platform/)
+[![Python](https://img.shields.io/pypi/pyversions/spirit-platform.svg)](https://pypi.org/project/spirit-platform/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Downloads](https://static.pepy.tech/badge/spirit-platform)](https://pepy.tech/project/spirit-platform)
+
+Spirit is a programmable Python platform for algorithmic cryptocurrency trading — a playground for building and testing your own strategies. It runs on your own hardware, talks to exchanges directly, and you own the strategy logic end-to-end.
 
 The framework is open source under Apache-2.0. Spirit handles the orchestration: market data, order placement, lifecycle hooks, and crash recovery. As your strategies mature, Plus and Pro open up access to our custom technical indicators and cloud storage for backtesting.
 

@@ -13,6 +13,7 @@ authors = [{name = "Tim Ozmen", email = "tim@tradebot.live"}]
 keywords = ["cryptocurrency", "trading", "kraken", "algorithmic-trading", "trading-platform"]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: Apache Software License",
@@ -20,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: System :: Monitoring",
 ]
 
 # Runtime deps for the Free / Plus framework. Heavy ML / TA / PG-access
@@ -51,10 +53,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://www.tradebot.live"
-Portal = "https://portal.tradebot.live"
-Repository = "https://github.com/timoz10/spirit-platform"
-Issues = "https://github.com/timoz10/spirit-platform/issues"
+Homepage      = "https://www.tradebot.live"
+Portal        = "https://portal.tradebot.live"
+Repository    = "https://github.com/timoz10/spirit-platform"
+Issues        = "https://github.com/timoz10/spirit-platform/issues"
+Documentation = "https://github.com/timoz10/spirit-platform#readme"
+Changelog     = "https://github.com/timoz10/spirit-platform/blob/main/CHANGELOG.md"
 
 [project.scripts]
 spirit = "spirit.main:main"
