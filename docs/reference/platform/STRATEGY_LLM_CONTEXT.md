@@ -134,6 +134,11 @@ Get the singleton via `from spirit.utils.data_provider import get_data_provider;
 | `get_strategy_metrics` | `(strategy_name, as_of_date, *, baseline_days=90, current_days=14, recent_days=7)` | `dict` — win-rate + streak metrics |
 | `write_heartbeat` | `(daemon_id, *, instance, status="ok", metadata=None, run_id="live")` | `int` |
 | `get_pairs` | `(instance=None)` | `list[dict]` — active pairs registry |
+| `upload_user_ohlc` | `(pair, interval, candles: list[dict])` | `dict` — `{batch_id, rows_inserted, rows_skipped, min_timestamp, max_timestamp}`. Bulk-seed your own OHLC (CSV import path); idempotent — re-uploading an overlapping range is silent dedupe. |
+| `append_user_ohlc` | `(pair, interval, candles: list[dict])` | `dict` — same shape/dedupe as `upload_user_ohlc`; incremental forward-tick (live + catch-up writes). |
+| `get_user_ohlc` | `(pair, interval, *, start=None, end=None, limit=5000, order="asc")` | `list[dict]` — your local OHLC store, **same row shape as `get_ohlc`**. Half-open `[start, end)`; `order="desc", limit=1` returns the most-recent local candle. |
+
+**BYOD OHLC (v2.2.4+).** The three `*_user_ohlc` methods are the "bring your own data" store — Free instances persist candles locally (`~/.spirit/<instance>/spirit.db`); paid instances back them by the gateway. End users seed it with `python3 -m spirit.backfill <kraken-csv>` (re-runnable, safe to run while Spirit is live). At boot, `OhlcCatchupRunner` gap-fills from the exchange (bounded by Kraken's 720-row/call cap). See `WRITING_A_STRATEGY.md` § "BYOD OHLC and boot-time catch-up" for the strategy-author walkthrough.
 
 ### IP (plus + pro tiers only — `403` on free)
 
@@ -213,6 +218,8 @@ When `uses_risk_gate = False` (default) the strategy fully owns sizing — set `
 | `SPIRIT_INSTANCE` | Instance label (e.g. `customer-47`) | none (required for cloud writes) |
 | `SPIRIT_API_KEY` | Gateway API key | none (required) |
 | `SPIRIT_API_URL` | Gateway base URL | `https://api.tradebot.live/v1` |
+| `SPIRIT_OHLC_CATCHUP_INTERVALS` | Intervals (comma-sep minutes) the boot-time catch-up runner gap-fills | `60` |
+| `SPIRIT_OHLC_SOURCE` | OHLC read routing: `auto` / `cloud_first` / `local_first` | `auto` |
 
 ### Resolution order (`get_strategy` in `strategy_config.py`)
 1. Built-in production: `src/spirit/strategies/` (currently just `zone_bounce`)
