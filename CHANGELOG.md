@@ -17,10 +17,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-_v2.2.4 work in progress — see the section below._
+_Nothing yet — v2.2.5 in progress._
 
 
-## 2.2.4 — TBD
+## 2.2.4 — 2026-05-26
 
 ### Added
 
