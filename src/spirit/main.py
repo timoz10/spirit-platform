@@ -1997,10 +1997,27 @@ def main():
                 # (see #361). Offline calibrators that still need PG are
                 # unaffected because they construct their own instance
                 # without calling set_freshness_cache().
-                from spirit.indicators.d_limit_v3.health_check import (
-                    DLimitHealthCheck,
-                )
-                DLimitHealthCheck.set_freshness_cache(freshness_cache)
+                #
+                # d_limit_v3 is IP-tier and is NOT bundled in the public
+                # wheel. Paid customers consume dlimit via the gateway, so
+                # the local health-check class is absent there — catch the
+                # ImportError explicitly and degrade gracefully (the
+                # freshness cache still records the WS-pushed events; it just
+                # has no local health-check hooked to it). Catching
+                # (ImportError, ModuleNotFoundError) here rather than letting
+                # it crash a paying customer's paper/live loop is the #803
+                # lesson applied (no `except Exception`; name the cause).
+                try:
+                    from spirit.indicators.d_limit_v3.health_check import (
+                        DLimitHealthCheck,
+                    )
+                    DLimitHealthCheck.set_freshness_cache(freshness_cache)
+                except (ImportError, ModuleNotFoundError):
+                    logger.info(
+                        "[PIPELINE] dlimit health check not bundled in this "
+                        "build (IP-tier) — freshness cache runs without a "
+                        "local health-check hook; WS events still recorded."
+                    )
 
                 event_bus.start()
 
