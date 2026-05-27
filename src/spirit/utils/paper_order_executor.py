@@ -17,6 +17,7 @@ from typing import Dict, Optional
 
 from spirit.exchange.executor import OrderExecutor
 from spirit.logger import get_logger
+from spirit.strategy_config import resolve_strategy_name
 
 logger = get_logger("paper_executor")
 
@@ -460,7 +461,7 @@ class PaperOrderExecutor(OrderExecutor):
             exit_dt = getattr(trade_record, 'exit_datetime', None)
             now = exit_dt if (self.replay_mode and exit_dt) else datetime.now(timezone.utc)
             pair = getattr(open_trade, 'symbol', None) or self.pair
-            strategy = getattr(open_trade, 'strategy_name', None) or 'zone_bounce'
+            strategy = resolve_strategy_name(getattr(open_trade, 'strategy_name', None))
             regime = getattr(open_trade, 'trend_direction_entry', None)
             exit_reason = getattr(trade_record, 'exit_reason', None)
 

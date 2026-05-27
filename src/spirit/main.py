@@ -40,7 +40,7 @@ try:
 except Exception:
     CsvMultiIntervalDataSource = None
 
-from spirit.strategy_config import get_strategy
+from spirit.strategy_config import get_strategy, resolve_strategy_name
 from spirit.trade_types import TradeRecord
 from spirit.trade_logic import (
     MultiPairTradeStateManager,
@@ -418,7 +418,7 @@ class SpiritOrchestrator:
                             if writer:
                                 writer.record_decision(
                                     signal, risk_decision, pair,
-                                    getattr(signal, 'strategy_name', None) or 'zone_bounce',
+                                    resolve_strategy_name(getattr(signal, 'strategy_name', None)),
                                     source=self.mode,
                                     run_id=self.run_id,
                                 )
@@ -1003,7 +1003,7 @@ class SpiritOrchestrator:
                     if writer:
                         writer.record_decision(
                             signal, risk_decision, pair,
-                            getattr(signal, 'strategy_name', None) or 'zone_bounce',
+                            resolve_strategy_name(getattr(signal, 'strategy_name', None)),
                             source=self.mode,
                             run_id=self.run_id,
                         )
@@ -1062,7 +1062,7 @@ class SpiritOrchestrator:
         # Capture entry context before sell clears open_trade
         entry_price = float(getattr(tsm.open_trade, 'entry_price', 0) or 0)
         entry_datetime = getattr(tsm.open_trade, 'entry_datetime', None)
-        entry_strategy_name = getattr(tsm.open_trade, 'strategy_name', None) or 'zone_bounce'
+        entry_strategy_name = resolve_strategy_name(getattr(tsm.open_trade, 'strategy_name', None))
 
         # Copy entry context to exit record
         for attr in _ENTRY_COPY_ATTRS:
@@ -1311,7 +1311,7 @@ class SpiritOrchestrator:
             trade_record = TradeRecord(
                 entry_price=pending.limit_price,
                 symbol=pair,
-                strategy_name='zone_bounce',
+                strategy_name=resolve_strategy_name(),
                 mode=self.mode,
             )
 
@@ -1744,14 +1744,14 @@ def main():
     is_spine = False
     first_strategy = next(iter(strategies.values()), None) if strategies else None
     if first_strategy is not None:
-        # SpineStrategy lives in the experimental tree and is excluded from the
-        # public bundle. Non-Spine strategies don't need it importable —
-        # treat missing import as "definitely not Spine".
-        try:
-            from spirit.strategies.experimental.spine import SpineStrategy
-            is_spine = isinstance(first_strategy, SpineStrategy)
-        except ImportError:
-            is_spine = False
+        # Detect a "strategy router" (e.g. Spine) STRUCTURALLY — the
+        # orchestrator must not import a concrete strategy class (keeps core
+        # strategy-agnostic; #816 leak-scrub). A router exposes child
+        # strategies + their pair routing, which is exactly what the block
+        # below consumes (`.children` / `.child_pairs`).
+        is_spine = hasattr(first_strategy, 'children') and hasattr(
+            first_strategy, 'child_pairs'
+        )
 
     if is_spine and first_strategy is not None:
         # Build StrategyRegistry from Spine's config-loaded children

@@ -23,6 +23,21 @@ from spirit.utils.config_loader import get_config
 from spirit.logger import get_logger
 logger = get_logger("strategy_config")
 
+
+def resolve_strategy_name(explicit: Optional[str] = None) -> str:
+    """Resolve the strategy name to attribute a trade/signal to.
+
+    Order of preference: an explicit per-trade/signal name → the configured
+    ``SPIRIT_STRATEGY`` → ``'unknown'``. The orchestrator and executors call
+    this instead of hard-coding a concrete strategy name, so core never names
+    a specific strategy (keeps the orchestrator strategy-agnostic — #816
+    leak-scrub). Always returns a non-empty string.
+    """
+    if explicit:
+        return explicit
+    configured = (get_config("SPIRIT_STRATEGY", "") or "").strip()
+    return configured or "unknown"
+
 # ---------------------------------------------------------------------------
 # Strategy registry: name → (aliases, module_path, class_name)
 #
