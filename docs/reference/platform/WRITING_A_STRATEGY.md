@@ -207,11 +207,10 @@ SPIRIT_STRATEGIES_DIR=/path/to/my/strategies
 
 When Spirit looks up `SPIRIT_STRATEGY=<name>`, it tries (first match wins):
 
-1. **Built-in production** in `src/spirit/strategies/` (currently just `zone_bounce`)
-2. **Built-in experimental** in `src/spirit/strategies/experimental/` (`macd_cross`, `rsi_reversion`, `spine`, `regime_engine`, `test`)
-3. **User dir** at `$SPIRIT_STRATEGIES_DIR` (default `~/.spirit/strategies/`)
+1. **Built-in registry** — the bundled examples that ship in the wheel are `sma_crossover` and `macd_demo` (under `src/spirit/strategies/examples/`). Licensed builds register their own strategies into the same registry.
+2. **User dir** at `$SPIRIT_STRATEGIES_DIR` (default `~/.spirit/strategies/`)
 
-Your strategies belong in step 3. The user dir is where iteration happens — edit the file, restart the service, no git involved.
+Your strategies belong in step 2. The user dir is where iteration happens — edit the file, restart the service, no git involved.
 
 ### Environment configuration
 

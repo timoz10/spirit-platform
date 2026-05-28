@@ -17,7 +17,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-_Nothing yet — v2.2.5 in progress._
+_v2.2.5 in progress — bug-fix bundle._
+
+### Fixed
+
+- **Open-trade restore could fail silently and then be destroyed.** When a persisted open trade couldn't be deserialised, the failure was swallowed and the next `save_state()` overwrote the key with `null` — losing the only recoverable copy of a live position. Restore failures now log at ERROR with the raw value, and `save_state()` preserves (never nulls) a key that failed to restore. (#810)
+- **Boot-time OHLC catch-up logged skip-noise for unconfigured pairs.** The catch-up runner iterated the full bundled pairs catalogue; on an install configured for 2 pairs it logged "no local data — skipping" for the other catalogue pairs every boot. It now iterates the intersection of the catalogue and configured `SPIRIT_PAIRS`. (#801)
+- **`strategy_performance_writer.create_table()` resolved a path absent from the wheel.** It loaded SQL from `scripts/decision_engine/sql/`, which never ships to PyPI — any runtime caller would `FileNotFoundError`. Removed; the customer schema is bootstrapped by `SqliteDataProvider`, and internal backfill scripts now load the DDL relative to their own location. (#806)
+- **Full-dedupe CSV re-upload left an empty batch row.** Re-importing an already-imported file inserted 0 candles (correct) but still recorded a `user_ohlc_batches` row with `row_count=0`. The empty audit row is now dropped. (#812)
+- **`spirit-preflight` FATAL'd on a Free config that omitted `SPIRIT_TIER`.** An unset tier was treated as Plus/Pro and demanded `SPIRIT_API_KEY`, breaking the Free "no key required" promise. An unset tier now resolves to Free. (#797)
+- **Paper-mode boot logged "Last save" / "Skipping equity restore" noise.** These read-then-ignore lines are demoted to DEBUG. (#798)
+
+### Changed
+
+- **Strategy-docs accuracy.** `STRATEGY_LLM_CONTEXT.md` §7 examples corrected from the unshipped `rsi_reversion` / `macd_cross` to the bundled `sma_crossover` / `macd_demo`.
 
 
 ## 2.2.4 — 2026-05-26

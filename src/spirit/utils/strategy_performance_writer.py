@@ -2,32 +2,21 @@
 Strategy Performance Writer
 
 Handles all writes to the strategy_performance table:
-- create_table(): Run DDL from SQL file
 - record_trade(): Single INSERT for paper/live trades
 - record_trades_batch(): Bulk INSERT for backfill
 - clear_backfill(): DELETE backtest rows for re-running
 
 Uses utils.db_connection following existing codebase patterns.
+
+Schema bootstrap is NOT done here. Customer installs create the table via
+``SqliteDataProvider`` on first connect (bundled ``storage/sqlite_schema.sql``).
+Internal Postgres backfill scripts load the DDL relative to their own
+location — see ``scripts/decision_engine/``. The old ``create_table()`` helper
+was removed (#806): it resolved a ``scripts/`` path that does not exist in the
+installed wheel, so any runtime caller would have hit ``FileNotFoundError``.
 """
 
-import os
 from typing import Dict, List, Optional
-
-def create_table() -> None:
-    """Create strategy_performance table by executing the SQL file."""
-    sql_path = os.path.join(
-        os.path.dirname(__file__),
-        '..', '..', '..', 'scripts', 'decision_engine', 'sql',
-        'create_strategy_performance.sql'
-    )
-    sql_path = os.path.abspath(sql_path)
-
-    with open(sql_path) as f:
-        sql = f.read()
-
-    from spirit.utils.data_provider import get_data_provider
-    get_data_provider().ensure_table('strategy_performance', sql)
-    print("strategy_performance table created successfully")
 
 
 def record_trade(

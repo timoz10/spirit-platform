@@ -222,9 +222,8 @@ When `uses_risk_gate = False` (default) the strategy fully owns sizing — set `
 | `SPIRIT_OHLC_SOURCE` | OHLC read routing: `auto` / `cloud_first` / `local_first` | `auto` |
 
 ### Resolution order (`get_strategy` in `strategy_config.py`)
-1. Built-in production: `src/spirit/strategies/` (currently just `zone_bounce`)
-2. Built-in experimental: `src/spirit/strategies/experimental/` (e.g. `macd_cross`, `rsi_reversion`)
-3. User dir: `$SPIRIT_STRATEGIES_DIR/<name>.py`
+1. **Built-in registry** — the name (or an alias) is looked up in the bundled strategy registry. The examples that ship in the wheel are `sma_crossover` and `macd_demo` (under `src/spirit/strategies/examples/`). Licensed builds register their own strategies into the same registry.
+2. **User dir** — `$SPIRIT_STRATEGIES_DIR/<name>.py` (default `~/.spirit/strategies/<name>.py`), loaded via `importlib`.
 
 ### Loader behaviour (`_load_user_strategy`)
 - Imports the file via `importlib.util.spec_from_file_location`

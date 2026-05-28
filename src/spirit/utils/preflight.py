@@ -458,10 +458,15 @@ def _check_env_vars(skip_kraken: bool = False, tier: str = "", diagnostic: bool 
             else:
                 required_missing.append('KRAKEN_API_KEY')
 
-    # SPIRIT_API_KEY: required for Plus/Pro. Free tier skips it entirely
-    # (already filtered out at the call-site for in-run preflight; we
-    # repeat the check here to keep the diagnostic branch self-contained).
-    if tier != "free":
+    # SPIRIT_API_KEY: required only for explicit paid tiers. Free skips it
+    # entirely. An UNSET tier is intentionally NOT forced to supply a key
+    # (#797): paid configs legitimately omit SPIRIT_TIER (tier resolves
+    # server-side from the key, so the key is present anyway), while a
+    # keyless Free install also has no tier — forcing a key there breaks the
+    # Free "no key required" promise. If a key IS present it's never
+    # "missing", so requiring it only for explicit paid tiers is sufficient.
+    tier_needs_key = tier in ("plus", "pro", "subscription")
+    if tier_needs_key:
         api_key = get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
         if not api_key:
             required_missing.append('SPIRIT_API_KEY')
@@ -480,7 +485,7 @@ def _check_env_vars(skip_kraken: bool = False, tier: str = "", diagnostic: bool 
             severity='WARN',
             message=f'Optional env vars not set: {", ".join(optional_missing)}',
         )
-    total = len(config_keys) + (0 if skip_kraken else 1) + (0 if tier == "free" else 1)
+    total = len(config_keys) + (0 if skip_kraken else 1) + (1 if tier_needs_key else 0)
     return CheckResult(
         name='env_vars',
         passed=True,
@@ -531,6 +536,26 @@ def _resolve_tier() -> str:
     return tier
 
 
+def _is_gateway_backed(tier: str) -> bool:
+    """Whether this install talks to the API gateway (needs key + connectivity).
+
+    - Explicit paid tier (`plus`/`pro`/`subscription`) → yes.
+    - Explicit `free` → no.
+    - Unset tier → ambiguous, so infer from key presence: paid configs
+      legitimately omit `SPIRIT_TIER` (tier is resolved server-side from
+      the key), while a keyless Free install also has no tier. (#797)
+    """
+    if tier in ("plus", "pro", "subscription"):
+        return True
+    if tier == "free":
+        return False
+    from spirit.utils.config_loader import get_config
+
+    return bool(
+        get_config("SPIRIT_API_KEY", "") or os.environ.get("SPIRIT_API_KEY", "")
+    )
+
+
 def run_preflight(
     skip_kraken: bool = False,
     tier: str | None = None,
@@ -562,8 +587,9 @@ def run_preflight(
 
     # Gateway connectivity is a Plus/Pro concern. Free tier doesn't talk
     # to the gateway at all (CompositeDataProvider routes reads to the
-    # exchange and writes to local SQLite).
-    if tier != "free":
+    # exchange and writes to local SQLite). An unset tier with no API key
+    # is treated as Free here too (#797).
+    if _is_gateway_backed(tier):
         checks.append(_check_api_gateway_connectivity())
         # Only resolve capabilities if env_vars + connectivity passed —
         # /v1/whoami won't be reachable otherwise.

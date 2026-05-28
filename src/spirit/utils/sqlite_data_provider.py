@@ -562,10 +562,22 @@ class SqliteDataProvider:
             rows_inserted = after - before
             rows_skipped = len(candles) - rows_inserted
 
-            cur.execute(
-                "UPDATE user_ohlc_batches SET row_count = ? WHERE batch_id = ?",
-                (rows_inserted, batch_id),
-            )
+            if rows_inserted > 0:
+                cur.execute(
+                    "UPDATE user_ohlc_batches SET row_count = ? WHERE batch_id = ?",
+                    (rows_inserted, batch_id),
+                )
+            else:
+                # Full dedupe — no candles landed under this batch_id, so the
+                # audit row carries no information the return dict doesn't
+                # already give the caller. Drop it rather than leave a
+                # row_count=0 record that accumulates on every re-upload
+                # (#812). FK-safe: ON DELETE CASCADE has no children to
+                # cascade to because nothing was inserted.
+                cur.execute(
+                    "DELETE FROM user_ohlc_batches WHERE batch_id = ?",
+                    (batch_id,),
+                )
 
         if rows_skipped > 0:
             logger.info(

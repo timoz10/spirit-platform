@@ -266,6 +266,19 @@ class OhlcCatchupRunner:
 # Boot-time wiring helper — picks pairs + intervals from config
 # ---------------------------------------------------------------------
 
+def _configured_pairs() -> set[str]:
+    """Pairs this instance is configured to trade, parsed from SPIRIT_PAIRS.
+
+    Returns an empty set when SPIRIT_PAIRS is unset — callers treat that
+    as "no restriction" and fall back to the full catalogue. ``get_config``
+    already resolves env-first then per-instance YAML.
+    """
+    from spirit.utils.config_loader import get_config
+
+    raw = (get_config("SPIRIT_PAIRS", "") or "").strip()
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
 def wire_boot_catchup(dp: Any, *, instance: str) -> dict | None:
     """Build + run an ``OhlcCatchupRunner`` from a runtime DataProvider.
 
@@ -306,13 +319,32 @@ def wire_boot_catchup(dp: Any, *, instance: str) -> dict | None:
         except Exception as e:
             logger.warning(f"[CATCHUP] skipped: get_pairs failed: {e}")
             return None
-        pairs = [
+        catalogue = [
             r["pair"] for r in pair_rows
             if isinstance(r, dict) and r.get("pair")
         ]
-        if not pairs:
+        if not catalogue:
             logger.info("[CATCHUP] skipped: no pairs configured for instance")
             return None
+
+        # Narrow the fetchable catalogue (pairs.json — what the platform
+        # CAN fetch) to the pairs this instance is configured to trade
+        # (SPIRIT_PAIRS — what it WILL fetch). Catching up catalogue pairs
+        # the user never configured just emits a per-pair "no local data —
+        # skipping" line on every boot (#801). Unset SPIRIT_PAIRS keeps the
+        # full catalogue, preserving behaviour for configs that don't set it.
+        configured = _configured_pairs()
+        if configured:
+            pairs = [p for p in catalogue if p in configured]
+            if not pairs:
+                logger.info(
+                    "[CATCHUP] skipped: none of SPIRIT_PAIRS (%s) are in the "
+                    "fetchable catalogue (%s)",
+                    ", ".join(sorted(configured)), ", ".join(catalogue),
+                )
+                return None
+        else:
+            pairs = catalogue
 
         raw_intervals = get_config("SPIRIT_OHLC_CATCHUP_INTERVALS", "60") or "60"
         intervals: list[int] = []

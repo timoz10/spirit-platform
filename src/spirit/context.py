@@ -76,6 +76,10 @@ class SpiritContext:
 
         # Trade state (replaces spirit_temp_trade + TradeStateManager.open_trade)
         self.open_trade: Optional[Any] = None  # TradeRecord when a trade is open
+        # Set True when restore_state() finds a persisted open_trade value it
+        # cannot deserialize. Guards save_state() from nulling the key and
+        # destroying recoverable data (see #810).
+        self._open_trade_restore_failed: bool = False
 
         # Paper equity (replaces PaperOrderExecutor standalone tracking)
         self.equity: float = 0.0
@@ -382,6 +386,13 @@ class SpiritContext:
         self._save_to_pg(self._pg_key('paper_equity'), self.equity)
         if self.open_trade is not None:
             self._save_to_pg(self._pg_key('open_trade'), self._serialize_trade(self.open_trade))
+        elif self._open_trade_restore_failed:
+            # A persisted open trade failed to restore this run (#810). Nulling
+            # the key here would destroy the only recoverable copy — preserve it.
+            logger.warning(
+                f"[CONTEXT:{self.pair}] Not nulling open_trade key — an "
+                f"unrestorable persisted trade is being preserved for recovery."
+            )
         else:
             self._save_to_pg(self._pg_key('open_trade'), None)
         self._save_to_pg(self._pg_key('startup_config'), {
@@ -416,26 +427,52 @@ class SpiritContext:
             except (TypeError, ValueError):
                 pass
 
-        # Restore open trade (try pair-prefixed first, then legacy)
-        trade_val = self._load_from_pg(self._pg_key('open_trade'))
+        # Restore open trade (try pair-prefixed first, then legacy).
+        # Every outcome below is logged — a persisted-but-unrestored trade
+        # must NEVER be silent (in live mode it means a real position is
+        # being forgotten). See #810.
+        trade_key = self._pg_key('open_trade')
+        trade_val = self._load_from_pg(trade_key)
         if trade_val is None:
-            trade_val = self._load_from_pg('open_trade')
+            trade_key = 'open_trade'
+            trade_val = self._load_from_pg(trade_key)
         if trade_val is not None and trade_val != 'null':
-            try:
-                self.open_trade = self._deserialize_trade(trade_val)
-                if self.open_trade is not None:
-                    entry_price = getattr(self.open_trade, 'entry_price', '?')
-                    logger.info(f"[CONTEXT:{self.pair}] Restored open trade: entry_price={entry_price}")
-                    restored = True
-            except Exception as e:
-                logger.warning(f"[CONTEXT:{self.pair}] Failed to restore open trade: {e}")
+            restored_trade = self._deserialize_trade(trade_val)
+            if restored_trade is not None:
+                self.open_trade = restored_trade
+                entry_price = getattr(self.open_trade, 'entry_price', '?')
+                logger.info(f"[CONTEXT:{self.pair}] Restored open trade: entry_price={entry_price}")
+                restored = True
+            else:
+                # Data was present but could not be reconstructed. Do NOT let
+                # this pass silently, and do NOT let save_state() overwrite it
+                # with None (which would destroy the only recoverable copy).
+                # Log the raw value at ERROR so an operator can recover it.
+                self._open_trade_restore_failed = True
+                logger.error(
+                    f"[CONTEXT:{self.pair}] OPEN TRADE NOT RESTORED — key "
+                    f"'{trade_key}' held a value that could not be "
+                    f"deserialized into a TradeRecord. The position is "
+                    f"UNMANAGED until resolved; save_state() will preserve the "
+                    f"key rather than null it. Raw value for recovery: "
+                    f"{trade_val!r}"
+                )
+        else:
+            logger.info(
+                f"[CONTEXT:{self.pair}] No open trade persisted "
+                f"(key '{self._pg_key('open_trade')}' empty) — starting flat."
+            )
 
         if restored:
             config_val = self._load_from_pg(self._pg_key('startup_config'))
             if config_val is None:
                 config_val = self._load_from_pg('startup_config')
             if config_val and isinstance(config_val, dict):
-                logger.info(f"[CONTEXT:{self.pair}] Last save: {config_val.get('last_save', 'unknown')}")
+                # DEBUG, not INFO: in paper mode the saved equity inside this
+                # config is discarded right after (see main.py), so logging
+                # "Last save" at INFO reads as a restore-then-ignore on boot
+                # (#798). The breadcrumb stays available at DEBUG.
+                logger.debug(f"[CONTEXT:{self.pair}] Last save: {config_val.get('last_save', 'unknown')}")
         else:
             logger.info(f"[CONTEXT:{self.pair}] No state to restore (fresh start)")
 
@@ -464,17 +501,31 @@ class SpiritContext:
 
     @staticmethod
     def _deserialize_trade(data) -> Optional[Any]:
-        """Deserialize a dict back into a TradeRecord."""
+        """Deserialize a dict back into a TradeRecord.
+
+        Returns None on failure, but logs the specific reason at WARNING so a
+        dropped trade is never invisible (see #810). The caller distinguishes
+        the None result from a successful restore and escalates accordingly.
+        """
         if data is None:
             return None
         if isinstance(data, str):
-            data = json.loads(data)
+            try:
+                data = json.loads(data)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"[CONTEXT] open_trade value is a non-JSON string; cannot deserialize: {e}")
+                return None
         if not isinstance(data, dict):
+            logger.warning(
+                f"[CONTEXT] open_trade value is not a dict "
+                f"(type={type(data).__name__}); cannot deserialize"
+            )
             return None
         try:
             from spirit.trade_types import TradeRecord
             fields = set(TradeRecord.__dataclass_fields__.keys())
             kwargs = {k: v for k, v in data.items() if k in fields}
             return TradeRecord(**kwargs)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[CONTEXT] TradeRecord construction failed during restore: {e}")
             return None

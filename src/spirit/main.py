@@ -1877,7 +1877,10 @@ def main():
                     logger.info(f"[{pair}] Restored open trade into TradeStateManager")
             if ctx.equity > 0 and order_executor and hasattr(order_executor, 'equity'):
                 if args.mode == 'paper':
-                    logger.info(
+                    # DEBUG, not INFO: paper mode always uses the configured
+                    # starting equity, so announcing the skip on every boot is
+                    # read-then-ignore noise (#798).
+                    logger.debug(
                         f"[{pair}] Skipping equity restore for paper mode "
                         f"(stale=${ctx.equity:.2f}, using starting=${order_executor.equity:.2f})"
                     )
