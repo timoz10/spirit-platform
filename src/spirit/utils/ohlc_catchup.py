@@ -243,7 +243,18 @@ class OhlcCatchupRunner:
             )
             return "skipped_current"
 
-        result = self._dp.append_user_ohlc(pair, interval, candles)
+        # Rule 11 row-contract bridge: get_ohlc keys the candle time as
+        # "datetime" (ExchangeBackedDataProvider._ohlc_candle_to_dict), but
+        # append_user_ohlc's contract requires "timestamp". Remap at the
+        # hand-off so the two providers agree without widening the write
+        # contract for every other caller (#825). _candle_ts_iso accepts a
+        # datetime, so no value conversion is needed — only the key name.
+        write_candles = [
+            {**c, "timestamp": c["datetime"]} if "timestamp" not in c and "datetime" in c else c
+            for c in candles
+        ]
+
+        result = self._dp.append_user_ohlc(pair, interval, write_candles)
         inserted = result.get("rows_inserted", 0)
 
         if over_cap:

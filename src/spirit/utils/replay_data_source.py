@@ -1,16 +1,21 @@
 """
 utils/replay_data_source.py
 
-PG-backed replay data source for historical backtesting through the full Spirit pipeline.
+Store-backed replay data source for historical backtesting through the full
+Spirit pipeline.
 
 Same interface as MultiPairCsvDataSource — drop-in replacement that reads OHLC
-from PostgreSQL ohlc_all instead of a CSV file.
+from the runtime DataProvider's store (Free → local SQLite ``user_ohlc``;
+Plus → cloud ``/v1/ohlc/user``) via ``get_user_ohlc``, rather than from raw
+PostgreSQL. The former PG-only path crashed on the framework wheel because
+``spirit.utils.db_connection`` is deliberately not bundled (#830).
 
 Loads all requested (pair, interval) data into memory at init, then replays
-candles chronologically with callbacks.
+candles chronologically with callbacks. Strategy-side OHLC reads during the
+run are cursor-bounded by ReplayReadWrapper (ADR-0003).
 
 Author: Claude Code + Tim
-Date: 2026-02-18
+Date: 2026-02-18 (PG); store-backed rewrite 2026-05-29 (#830)
 """
 
 import time
@@ -22,10 +27,16 @@ import pandas as pd
 from spirit.logger import get_logger
 from spirit.config import KRAKEN_OHLC_COUNT
 from spirit.data_types import OHLCRecord, OHLCData
+from spirit.utils import replay_clock
 
 logger = get_logger("replay_data_source")
 
 __all__ = ["ReplayDataSource"]
+
+# Upper bound on rows loaded per (pair, interval) for a replay window. Matches
+# the gateway's max page size; comfortably covers realistic windows (a 90-day
+# 1m backtest is ~129.6k rows). Larger windows log a truncation warning.
+_REPLAY_LOAD_LIMIT = 200_000
 
 
 class ReplayDataSource:
@@ -66,7 +77,7 @@ class ReplayDataSource:
         # Load data from PG
         self._data: Dict[str, Dict[int, pd.DataFrame]] = {}
         self._pointers: Dict[str, Dict[int, int]] = {}
-        self._load_from_pg()
+        self._load_candles()
 
         total_candles = sum(
             len(df) for pair_data in self._data.values() for df in pair_data.values()
@@ -77,40 +88,60 @@ class ReplayDataSource:
             f"range={self.start_date} to {self.end_date}"
         )
 
-    def _load_from_pg(self):
-        """Query ohlc_all and split into per-(pair, interval) DataFrames.
+    def _load_candles(self):
+        """Load each (pair, interval) range from the runtime DataProvider store
+        and split into per-(pair, interval) DataFrames.
 
-        Loads extra data before start_date to fill the warmup window, so that
-        the first replay callback corresponds to a candle at ~start_date.
+        Replaces the former PG-only ``_load_from_pg`` (#830): ``db_connection``
+        is intentionally stripped from the framework wheel, so replay reads
+        through the tier DataProvider like every other consumer (ADR-0001) —
+        Free → local SQLite ``user_ohlc``; Plus → cloud ``/v1/ohlc/user`` (the
+        only OHLC a Plus key is entitled to since migration 036). Loads extra
+        data before start_date to fill the warmup window, so the first replay
+        callback corresponds to a candle at ~start_date.
+
+        This load runs before any candle is emitted, so the replay clock cursor
+        is still ``None`` and the ReplayReadWrapper passes the full requested
+        range through unclamped (see replay_clock.current()).
         """
-        from spirit.utils.db_connection import execute_query
         from datetime import timedelta
+        from spirit.utils.data_provider import get_data_provider
 
-        pair_placeholders = ','.join(['%s'] * len(self.pairs))
-        interval_placeholders = ','.join(['%s'] * len(self.intervals))
+        dp = get_data_provider()
 
         # Compute warmup lookback based on primary interval only.
         # With monitoring intervals (e.g. 1m + 60m), using max_interval
         # would load 720*60=43200 minutes of 1m warmup candles needlessly.
         warmup_minutes = self.window_size * self.primary_interval
         warmup_start = (
-            pd.Timestamp(self.start_date) - timedelta(minutes=warmup_minutes)
-        ).strftime('%Y-%m-%d %H:%M:%S')
+            pd.Timestamp(self.start_date, tz='UTC') - timedelta(minutes=warmup_minutes)
+        ).to_pydatetime()
+        # get_user_ohlc is half-open [start, end); widen by one primary
+        # interval so the candle at exactly end_date is still included,
+        # preserving the old ``datetime <= end_date`` inclusivity.
+        end_excl = (
+            pd.Timestamp(self.end_date, tz='UTC') + timedelta(minutes=self.primary_interval)
+        ).to_pydatetime()
 
-        query = f"""
-            SELECT pair, interval, datetime, open, high, low, close,
-                   vwap, volume, count
-            FROM ohlc_all
-            WHERE pair IN ({pair_placeholders})
-              AND interval IN ({interval_placeholders})
-              AND datetime >= %s AND datetime <= %s
-            ORDER BY datetime
-        """
-        params = tuple(self.pairs) + tuple(self.intervals) + (warmup_start, self.end_date)
-        rows = execute_query(query, params)
+        all_rows: list[dict] = []
+        for pair in self.pairs:
+            for itvl in self.intervals:
+                rows = dp.get_user_ohlc(
+                    pair, itvl,
+                    start=warmup_start, end=end_excl,
+                    limit=_REPLAY_LOAD_LIMIT, order='asc',
+                )
+                if len(rows) >= _REPLAY_LOAD_LIMIT:
+                    logger.warning(
+                        "[Replay] %s/%dm hit the %d-row load cap — the replay "
+                        "window may be truncated. Narrow --start/--end or split "
+                        "the run.",
+                        pair, itvl, _REPLAY_LOAD_LIMIT,
+                    )
+                all_rows.extend(dict(r) for r in rows)
 
-        if not rows:
-            logger.warning("[Replay] No OHLC data returned from PG")
+        if not all_rows:
+            logger.warning("[Replay] No OHLC data returned from the store")
             for pair in self.pairs:
                 self._data[pair] = {}
                 self._pointers[pair] = {}
@@ -119,7 +150,7 @@ class ReplayDataSource:
                     self._pointers[pair][itvl] = 0
             return
 
-        df = pd.DataFrame([dict(r) for r in rows])
+        df = pd.DataFrame(all_rows)
         df['datetime'] = pd.to_datetime(df['datetime'], utc=True)
         df['interval'] = df['interval'].astype(int)
 
@@ -228,6 +259,10 @@ class ReplayDataSource:
             df = self._data[pair][itvl]
             start = max(0, next_ptr - self.window_size + 1)
             window = self._build_window(df.iloc[start:next_ptr + 1], pair, itvl)
+            # Publish the replay cursor BEFORE firing callbacks so any
+            # dp.get_ohlc(...) inside strategy evaluation is bounded to this
+            # candle's time (no look-ahead). Monotonic — see replay_clock.
+            replay_clock.advance_to(ts)
             self._trigger_callbacks(pair, itvl, window)
             return True
 

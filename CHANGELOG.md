@@ -27,9 +27,13 @@ _v2.2.5 in progress — bug-fix bundle._
 - **Full-dedupe CSV re-upload left an empty batch row.** Re-importing an already-imported file inserted 0 candles (correct) but still recorded a `user_ohlc_batches` row with `row_count=0`. The empty audit row is now dropped. (#812)
 - **`spirit-preflight` FATAL'd on a Free config that omitted `SPIRIT_TIER`.** An unset tier was treated as Plus/Pro and demanded `SPIRIT_API_KEY`, breaking the Free "no key required" promise. An unset tier now resolves to Free. (#797)
 - **Paper-mode boot logged "Last save" / "Skipping equity restore" noise.** These read-then-ignore lines are demoted to DEBUG. (#798)
+- **`spirit --replay` crashed on the wheel.** Historical backtesting was hardwired to PostgreSQL — `ReplayDataSource` imported `spirit.utils.db_connection`, which is intentionally not bundled, so `--start/--end` replay died with `ModuleNotFoundError` before reading any data. Replay now loads through the runtime DataProvider's store (`get_user_ohlc`), so it works on Free (local SQLite) and Plus (cloud) with no PG dependency. (#830)
+- **Free-tier boot catch-up filled nothing.** `get_ohlc` returns candles keyed `datetime`, but `append_user_ohlc` requires `timestamp`; the mismatch made every catch-up fill fail with `missing required keys: ['timestamp']`. The runner now remaps the key at the hand-off. (#825)
+- **Periodic crash-recovery state save rarely fired.** The `spirit_state` periodic save was gated on `candles_processed % 10`, checked only at 60m eval points where the all-candles counter (incl 1m monitoring ticks) is arbitrary mod 10 — so `startup_config`/`paper_equity` could go stale for hours, weakening crash recovery once a position moved. Now saved on a wall-clock cadence per pair (`SPIRIT_STATE_SAVE_INTERVAL_S`, default 60s), matching the #409 heartbeat fix. (#826)
 
 ### Changed
 
+- **Backtest reads now return your data, not live market data.** During `--replay`, strategy OHLC reads (`get_ohlc(limit=N)`) are served from your store bounded by the replay cursor — replay data, no look-ahead — so the documented "backtest your strategy" loop works on both tiers. `get_ohlc` also honours `SPIRIT_OHLC_SOURCE` (`auto`/`cloud_first`/`local_first`) identically on Free and Plus; the default live/paper path is unchanged. (#815, #830, ADR-0003)
 - **Strategy-docs accuracy.** `STRATEGY_LLM_CONTEXT.md` §7 examples corrected from the unshipped `rsi_reversion` / `macd_cross` to the bundled `sma_crossover` / `macd_demo`.
 
 

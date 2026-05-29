@@ -61,6 +61,12 @@ class FrameworkDataProvider(Protocol):
     ) -> list[dict]:
         """Fetch OHLC candles. Returns list of dicts with keys:
         pair, interval, datetime, open, high, low, close, vwap, volume, count.
+
+        Source routing honours SPIRIT_OHLC_SOURCE (auto/cloud_first/
+        local_first) identically across composite tiers, and reads are
+        cursor-bounded from the store during `--replay`. Contract +
+        semantics: docs/reference/MODULE_CONTRACTS.md (get_ohlc routing),
+        ADR-0001 (tier switch) + ADR-0003 (replay mode wrapper).
         """
         ...
 
@@ -575,42 +581,54 @@ def get_data_provider() -> DataProvider:
         tier = os.environ.get("SPIRIT_TIER", "").strip().lower()
 
     if tier == "free":
-        _provider = _build_free_tier_provider()
-        return _provider
-
-    from spirit.utils.api_data_provider import ApiDataProvider
-
-    base_url = get_config("SPIRIT_API_URL", "https://api.tradebot.live/v1")
-    api_key = get_config("SPIRIT_API_KEY", "")
-    if not api_key:
-        import os
-        api_key = os.environ.get("SPIRIT_API_KEY", "")
-    if not api_key:
-        raise RuntimeError(
-            "SPIRIT_API_KEY must be set (env var or spirit.yaml). "
-            "Run `python3 -m spirit.setup` to configure, or set "
-            "SPIRIT_TIER=free to run the local Free-tier stack."
-        )
-    gateway = ApiDataProvider(base_url=base_url, api_key=api_key)
-
-    # BYOD branch (#666): Plus/Pro keys lost `read:ohlc` in #665. When
-    # preflight has populated capabilities AND they exclude `read:ohlc`,
-    # wrap the gateway in a PaidTierComposite that routes OHLC reads to
-    # a local Kraken-backed ExchangeBackedDataProvider. internal_canary +
-    # admin still carry `read:ohlc` and skip this branch — they keep the
-    # direct ApiDataProvider. Capabilities empty (no preflight: replay,
-    # tests) also keeps the direct path to avoid regression.
-    from spirit.utils.preflight import get_session_capabilities
-    caps = get_session_capabilities()
-    if caps and "read:ohlc" not in caps:
-        _provider = _wrap_paid_tier_byod(gateway)
-        logger.info(
-            f"DataProvider: paid-tier BYOD → gateway={base_url} "
-            f"+ local exchange (no read:ohlc capability)"
-        )
+        provider = _build_free_tier_provider()
     else:
-        _provider = gateway
-        logger.info(f"DataProvider: api → {base_url}")
+        from spirit.utils.api_data_provider import ApiDataProvider
+
+        base_url = get_config("SPIRIT_API_URL", "https://api.tradebot.live/v1")
+        api_key = get_config("SPIRIT_API_KEY", "")
+        if not api_key:
+            import os
+            api_key = os.environ.get("SPIRIT_API_KEY", "")
+        if not api_key:
+            raise RuntimeError(
+                "SPIRIT_API_KEY must be set (env var or spirit.yaml). "
+                "Run `python3 -m spirit.setup` to configure, or set "
+                "SPIRIT_TIER=free to run the local Free-tier stack."
+            )
+        gateway = ApiDataProvider(base_url=base_url, api_key=api_key)
+
+        # BYOD branch (#666): Plus/Pro keys lost `read:ohlc` in #665. When
+        # preflight has populated capabilities AND they exclude `read:ohlc`,
+        # wrap the gateway in a PaidTierComposite that routes OHLC reads to
+        # a local Kraken-backed ExchangeBackedDataProvider. internal_canary +
+        # admin still carry `read:ohlc` and skip this branch — they keep the
+        # direct ApiDataProvider. Capabilities empty (no preflight: replay,
+        # tests) also keeps the direct path to avoid regression.
+        from spirit.utils.preflight import get_session_capabilities
+        caps = get_session_capabilities()
+        if caps and "read:ohlc" not in caps:
+            provider = _wrap_paid_tier_byod(gateway)
+            logger.info(
+                f"DataProvider: paid-tier BYOD → gateway={base_url} "
+                f"+ local exchange (no read:ohlc capability)"
+            )
+        else:
+            provider = gateway
+            logger.info(f"DataProvider: api → {base_url}")
+
+    # Replay read wrapper (ADR-0003): during `--replay`, route every OHLC read
+    # to the tier store bounded by the replay cursor — replay data, not live,
+    # and no look-ahead. Installed uniformly for both tiers (it's a *mode*
+    # wrapper over the tier provider, not a tier branch). Activated by main.py
+    # before the first get_data_provider() call.
+    from spirit.utils import replay_clock
+    if replay_clock.is_active():
+        from spirit.utils.replay_provider_wrapper import ReplayReadWrapper
+        provider = ReplayReadWrapper(provider)
+        logger.info(
+            "DataProvider: replay read wrapper active (cursor-bounded store reads)"
+        )
 
     trace_path = get_config("SPIRIT_DATA_PROVIDER_TRACE", "")
     if not trace_path:
@@ -619,9 +637,10 @@ def get_data_provider() -> DataProvider:
     if trace_path:
         from spirit.utils.coverage_recorder import CountingDataProvider
 
-        _provider = CountingDataProvider(_provider)
+        provider = CountingDataProvider(provider)
         logger.info(f"DataProvider: counting wrapper enabled → {trace_path}")
 
+    _provider = provider
     return _provider
 
 

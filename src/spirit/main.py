@@ -131,6 +131,20 @@ class SpiritOrchestrator:
                 get_config('SPIRIT_ALIVE_LOG_INTERVAL_S', '1800'))
         except (TypeError, ValueError):
             self._alive_log_min_interval_s = 1800.0
+        # Periodic crash-recovery state save — gate on wall-clock PER PAIR, not
+        # `candles_processed % 10`. The all-candles counter (incl 1m monitoring
+        # ticks) is arbitrary mod 10 at the 60m eval points where it was
+        # checked, so the save rarely fired and startup_config/paper_equity
+        # went stale for hours. Same fault class as the #409 heartbeat gate.
+        # Per-pair (not a single timestamp like the heartbeat) because
+        # save_state persists per-pair keys — one pair must not starve another.
+        # See issue #826.
+        self._last_state_save_ts: dict = defaultdict(float)
+        try:
+            self._state_save_min_interval_s: float = float(
+                get_config('SPIRIT_STATE_SAVE_INTERVAL_S', '60'))
+        except (TypeError, ValueError):
+            self._state_save_min_interval_s = 60.0
         self.data_source = None  # set after data source creation
         self.csv_thread = None
         self._instance = get_config('SPIRIT_INSTANCE', 'prod')
@@ -298,14 +312,30 @@ class SpiritOrchestrator:
         with self._eval_locks[pair]:
             self._evaluate_pair_locked(pair, window_df)
 
+    def _state_save_tick(self, pair, ctx):
+        """Persist crash-recovery state on a wall-clock cadence (per pair).
+
+        Replaces the ``candles_processed % 10 == 0`` gate, which was checked
+        only at 60m eval points where the all-candles counter (incl 1m
+        monitoring ticks) is arbitrary mod 10 — so it rarely fired and
+        startup_config/paper_equity went stale (#826). Same fault class as the
+        #409 heartbeat gate. Gated on ``_state_save_min_interval_s`` (default
+        60s, env ``SPIRIT_STATE_SAVE_INTERVAL_S``).
+        """
+        now = time.monotonic()
+        if now - self._last_state_save_ts[pair] < self._state_save_min_interval_s:
+            return
+        self._last_state_save_ts[pair] = now
+        ctx.save_state()
+
     def _evaluate_pair_locked(self, pair, window_df):
         """Body of _evaluate_pair with the per-pair lock already held."""
         ctx = self.context_manager.get(pair)
 
         # Periodic state save — before any early returns so pairs with pending
-        # limits still persist startup_config and paper_equity (#193)
-        if ctx.health['candles_processed'] % 10 == 0:
-            ctx.save_state()
+        # limits still persist startup_config and paper_equity (#193). Gated on
+        # wall-clock per pair (#826).
+        self._state_save_tick(pair, ctx)
 
         # Dedup: skip 60m evaluation if limit is pending — but still check limit lifecycle
         if self.pending_orders.has_pending(pair):
@@ -626,8 +656,8 @@ class SpiritOrchestrator:
             if exit_flag and trade_record is not None and tsm.open_trade is not None:
                 self._process_exit_strategy(pair, strategy_name, trade_record)
 
-            if ctx.health['candles_processed'] % 10 == 0:
-                ctx.save_state()
+            # Periodic state save on wall-clock cadence per pair (#826).
+            self._state_save_tick(pair, ctx)
         except Exception as e:
             self._cb_logger.exception(f"[{pair}:{strategy_name}] Exception in _evaluate_pair_strategy: {e}")
             ctx.health['errors'] += 1
@@ -1662,6 +1692,12 @@ def main():
             args.mode = 'paper'
         # Expose replay start for PIT-safe calibration in scorer/regime engine
         os.environ['SPIRIT_REPLAY_START'] = args.start
+        # Activate the replay clock BEFORE the first get_data_provider() call so
+        # the cursor-bounded read wrapper is installed (ADR-0003 / #830). Reads
+        # stay cursor-bounded (no look-ahead) and return replay store data, not
+        # live market data.
+        from spirit.utils import replay_clock
+        replay_clock.activate()
 
     # Generate run_id for replay runs (live/paper use 'live')
     from spirit.utils.run_manager import LIVE_RUN_ID
