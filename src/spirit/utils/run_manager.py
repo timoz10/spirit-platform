@@ -72,7 +72,17 @@ def register_run(
         git_hash: Short git hash at time of run
     """
     import json
-    from spirit.utils.db_connection import execute_query
+    try:
+        from spirit.utils.db_connection import execute_query
+    except ModuleNotFoundError:
+        # replay_runs is a dev/internal PG archive table; db_connection is not
+        # bundled in the framework wheel. Replay still runs — run registration
+        # is best-effort archival, not load-bearing (Free/Plus run listing goes
+        # via the DataProvider Protocol, not this table). (#830 follow-on)
+        logger.debug(
+            "[RUN] replay_runs unavailable (no db_connection) — skipping registration"
+        )
+        return
 
     execute_query("""
         INSERT INTO replay_runs (id, tag, strategy_name, pairs, start_date, end_date,
@@ -102,7 +112,16 @@ def finalize_run(run_id: str, status: str = 'completed') -> Dict[str, Any]:
     Returns:
         Dict with summary stats (total_trades, win_rate, profit_factor, net_pnl_pct)
     """
-    from spirit.utils.db_connection import execute_query
+    try:
+        from spirit.utils.db_connection import execute_query
+    except ModuleNotFoundError:
+        # See register_run: replay_runs is dev/internal PG only, absent from the
+        # framework wheel. Finalize is best-effort archival. (#830 follow-on)
+        logger.debug(
+            "[RUN] replay_runs unavailable (no db_connection) — skipping finalize"
+        )
+        return {'total_trades': 0, 'win_rate': None,
+                'profit_factor': None, 'net_pnl_pct': None}
 
     # Compute summary stats from this run's trades
     stats = execute_query("""

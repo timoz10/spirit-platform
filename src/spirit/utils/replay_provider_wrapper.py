@@ -45,6 +45,11 @@ __all__ = ["ReplayReadWrapper"]
 # minute-aligned, so 1ms cannot pull in the next candle).
 _CURSOR_EPS = timedelta(milliseconds=1)
 
+# Per-(pair, interval) one-time fetch cap. Matches the gateway page cap; a
+# 90-day 1m window (~129.6k rows) fits. Older candles beyond the cap are
+# dropped with a warning.
+_REPLAY_CACHE_LIMIT = 200_000
+
 
 def _to_utc(ts) -> pd.Timestamp:
     """Coerce a timestamp to tz-aware UTC so comparisons never mix naive/aware."""
@@ -57,6 +62,12 @@ class ReplayReadWrapper:
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
+        # (pair, interval) -> list[(ts_utc: pd.Timestamp, row: dict)] ascending.
+        # Fetched ONCE per (pair, interval) on the first cursor-bounded read,
+        # then sliced in memory. Without this the naive get_ohlc(limit=N) pattern
+        # makes one gateway HTTP call PER candle eval — ~hundreds per replay —
+        # which rate-limits (429) and silently drops candles (#830 acceptance).
+        self._series_cache: dict = {}
 
     # ------------------------------------------------------------------
     # Cursor-bounded OHLC reads — both route to the store (get_user_ohlc)
@@ -74,35 +85,62 @@ class ReplayReadWrapper:
             pair, interval, start=start, end=end, limit=limit, order=order,
         )
 
+    def _full_series(self, pair, interval):
+        """Fetch the whole stored series for (pair, interval) once and cache it
+        as ascending (ts_utc, row) tuples. One store call per pair/interval for
+        the entire replay, instead of one per candle eval."""
+        key = (pair, int(interval))
+        cached = self._series_cache.get(key)
+        if cached is None:
+            rows = self._inner.get_user_ohlc(
+                pair, interval, start=None, end=None,
+                limit=_REPLAY_CACHE_LIMIT, order="asc",
+            )
+            cached = sorted(
+                ((_to_utc(r["datetime"]), r) for r in rows),
+                key=lambda t: t[0],
+            )
+            self._series_cache[key] = cached
+            if len(rows) >= _REPLAY_CACHE_LIMIT:
+                logger.warning(
+                    "[Replay] cache hit the %d-row cap for %s/%dm — older "
+                    "candles may be missing from in-replay reads.",
+                    _REPLAY_CACHE_LIMIT, pair, interval,
+                )
+        return cached
+
     def _bounded_read(self, pair, interval, *, start, end, limit, order):
         cursor = replay_clock.current()
 
         # Before the first candle is emitted (e.g. ReplayDataSource's own load),
         # there's no cursor to clamp to — pass through so the loader sees the
-        # full requested range.
+        # full requested range (and we don't cache a half-built series).
         if cursor is None:
             return self._inner.get_user_ohlc(
                 pair, interval, start=start, end=end, limit=limit, order=order,
             )
 
+        # Upper bound = cursor (inclusive). Optional caller `end` tightens it
+        # further but can never exceed the cursor (no look-ahead).
         upper = _to_utc(cursor) + _CURSOR_EPS
-        end_eff = upper if end is None else min(_to_utc(end), upper)
+        if end is not None:
+            upper = min(_to_utc(end), upper)
+        lo = _to_utc(start) if start is not None else None
 
-        if start is None:
-            # "latest N as of the cursor" — the naive get_ohlc(limit=N) pattern.
-            # Fetch newest-first then return ascending so the last row is the
-            # latest candle, matching live get_ohlc(limit=N) semantics.
-            rows = self._inner.get_user_ohlc(
-                pair, interval, start=None, end=end_eff, limit=limit, order="desc",
-            )
-            rows = list(reversed(rows))
-            if order == "desc":
-                rows = list(reversed(rows))
-            return rows
+        series = self._full_series(pair, interval)
+        out = [
+            row for (ts, row) in series
+            if ts < upper and (lo is None or ts >= lo)
+        ]
 
-        return self._inner.get_user_ohlc(
-            pair, interval, start=start, end=end_eff, limit=limit, order=order,
-        )
+        # No explicit start → "latest N as of the cursor" (the naive
+        # get_ohlc(limit=N) pattern): keep the most recent N. With a start →
+        # the earliest N within [start, cursor]. Mirrors live get_ohlc.
+        if limit:
+            out = out[-limit:] if start is None else out[:limit]
+        if order == "desc":
+            out = list(reversed(out))
+        return out
 
     # ------------------------------------------------------------------
     # Everything else — delegated to the wrapped provider
