@@ -506,6 +506,9 @@ class SpiritOrchestrator:
                         f"Cache READY but fetch returned NULL — suspected fetch race. See #493."
                     )
 
+            position_opened = False
+            position_closed = False
+
             if entry_flag and trade_record is not None:
                 # Route limit orders through pending system, market orders immediate
                 order_type = getattr(trade_record, 'order_type', None) or 'market'
@@ -518,6 +521,7 @@ class SpiritOrchestrator:
                     )
                 if tsm.open_trade is not None:
                     ctx.set_open_trade(tsm.open_trade)
+                    position_opened = True
                 if self._update_state and tsm.open_trade is not None:
                     ot = tsm.open_trade
                     self._update_state(open_trade={
@@ -529,6 +533,16 @@ class SpiritOrchestrator:
 
             if exit_flag and trade_record is not None and tsm.open_trade is not None:
                 self._process_exit(pair, trade_record)
+                position_closed = True
+
+            # Event-driven persist (#835): a position that opened or closed this
+            # cycle must hit spirit_state NOW, not at the next eval. The cycle-
+            # start save (site 1) is cadence-gated AND runs before this trade
+            # logic, so without this an open position waits a full interval to
+            # persist — lost on a crash in live mode. Bypass the cadence gate:
+            # a state change is an event, not periodic re-persistence.
+            if position_opened or position_closed:
+                ctx.save_state()
 
         except Exception as e:
             self._cb_logger.exception(f"[{pair}] Exception in _evaluate_pair: {e}")
